@@ -23,7 +23,7 @@ namespace KKSkinTool
         ToolStripStatusLabel stPos, stZoom, stInfo;
         bool syncing;
         readonly string settingsPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "kkskintool_settings.txt");
-        string lastPartDir = "", lastSaveDir = "";
+        string lastPartDir = "", lastSaveDir = "", batchTop = "", batchBottom = "", batchOut = "";
 
         public MainForm()
         {
@@ -49,6 +49,8 @@ namespace KKSkinTool
             ts.Items.Add(Btn("100%", "Ctrl+1", (s, e) => canvas.SetZoom(1f, new Point(canvas.Width / 2, canvas.Height / 2))));
             ts.Items.Add(new ToolStripSeparator());
             ts.Items.Add(Btn("PNG 저장", "Ctrl+S", (s, e) => SaveResult()));
+            ts.Items.Add(new ToolStripSeparator());
+            ts.Items.Add(Btn("TOP × BOTTOM 일괄 조합", "Ctrl+B: TOP 폴더와 BOTTOM 폴더의 모든 조합을 TOP_BOTTOM.png로 저장", (s, e) => OpenBatch()));
 
             // ---------------- 오른쪽 속성 패널
             var side = new TableLayoutPanel { Dock = DockStyle.Right, Width = 270, ColumnCount = 2, Padding = new Padding(8), AutoScroll = true };
@@ -82,12 +84,12 @@ namespace KKSkinTool
             side.Controls.Add(trkWire);
             var help = new Label
             {
-                AutoSize = false, Dock = DockStyle.Fill, Height = 300, ForeColor = Color.DimGray,
+                AutoSize = false, Dock = DockStyle.Fill, Height = 330, ForeColor = Color.DimGray,
                 Text = "조작\n" +
                        "· 파트 안 드래그: 이동\n· 모서리 사각형: 크기\n· 주황 원: 회전 (Shift: 15° 단위)\n" +
                        "· 방향키: 1px 이동 (Shift: 10px)\n· Alt+휠: 크기, Alt+Shift+휠: 회전\n\n" +
                        "· 휠: 확대/축소\n· 가운데·오른쪽 드래그, Space+드래그: 화면 이동\n\n" +
-                       "· Enter 확정, Esc 취소\n· Ctrl+Z 실행 취소, Ctrl+Y 다시 실행\n· Ctrl+O 파트, Ctrl+S 저장, Ctrl+0 맞춤"
+                       "· Enter 확정, Esc 취소\n· Ctrl+Z 실행 취소, Ctrl+Y 다시 실행\n· Ctrl+O 파트, Ctrl+S 저장, Ctrl+0 맞춤\n· Ctrl+B TOP × BOTTOM 일괄 조합"
             };
             side.Controls.Add(help); side.SetColumnSpan(help, 2);
 
@@ -141,10 +143,13 @@ namespace KKSkinTool
             if (l.Length > 0) wirePath = l[0];
             if (l.Length > 1) lastPartDir = l[1];
             if (l.Length > 2) lastSaveDir = l[2];
+            if (l.Length > 3) batchTop = l[3];
+            if (l.Length > 4) batchBottom = l[4];
+            if (l.Length > 5) batchOut = l[5];
         }
         void SaveSettings()
         {
-            try { File.WriteAllLines(settingsPath, new[] { wirePath ?? "", lastPartDir ?? "", lastSaveDir ?? "" }); } catch { }
+            try { File.WriteAllLines(settingsPath, new[] { wirePath ?? "", lastPartDir ?? "", lastSaveDir ?? "", batchTop ?? "", batchBottom ?? "", batchOut ?? "" }); } catch { }
         }
 
         // ------------------------------------------------------------ 베이스 / 문서
@@ -213,6 +218,16 @@ namespace KKSkinTool
                 if (d.ShowDialog(this) != DialogResult.OK) return;
                 doc.Save(d.FileName); lastSaveDir = Path.GetDirectoryName(d.FileName); SaveSettings();
                 stInfo.Text = "저장: " + d.FileName;
+            }
+        }
+
+        // ------------------------------------------------------------ 일괄 조합
+        void OpenBatch()
+        {
+            using (var f = new BatchCombineForm(batchTop, batchBottom, batchOut, DocW, DocH))
+            {
+                f.ShowDialog(this);
+                batchTop = f.TopDir; batchBottom = f.BottomDir; batchOut = f.OutDir; SaveSettings();
             }
         }
 
@@ -330,6 +345,7 @@ namespace KKSkinTool
                 case Keys.Control | Keys.O: LoadPart(); return true;
                 case Keys.Control | Keys.S: SaveResult(); return true;
                 case Keys.Control | Keys.N: NewDoc(); return true;
+                case Keys.Control | Keys.B: OpenBatch(); return true;
                 case Keys.Control | Keys.D0: canvas.FitView(); return true;
                 case Keys.Control | Keys.D1: canvas.SetZoom(1f, new Point(canvas.Width / 2, canvas.Height / 2)); return true;
                 case Keys.Control | Keys.Oemplus: canvas.SetZoom(canvas.Zoom * 1.25f, new Point(canvas.Width / 2, canvas.Height / 2)); return true;
