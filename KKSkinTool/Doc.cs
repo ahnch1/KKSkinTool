@@ -42,6 +42,19 @@ namespace KKSkinTool
         }
 
         public bool CanUndo { get { return undo.Count > 0; } }
+
+        /// <summary>외부 편집(유동화) 시작 전 실행 취소 지점 저장</summary>
+        public void SaveUndoPoint()
+        {
+            Push(undo);
+            foreach (var b in redo) b.Dispose(); redo.Clear();
+        }
+        /// <summary>마지막 실행 취소 지점을 버림 (유동화 취소 시)</summary>
+        public void DropLastUndo()
+        {
+            if (undo.Count == 0) return;
+            undo[undo.Count - 1].Dispose(); undo.RemoveAt(undo.Count - 1);
+        }
         public bool CanRedo { get { return redo.Count > 0; } }
 
         void Push(List<Bitmap> stack)

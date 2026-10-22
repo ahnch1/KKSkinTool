@@ -21,6 +21,12 @@ namespace KKSkinTool
         public event Action BeginEdit;       // 드래그 시작 직전 (undo 기록)
         public event Action<PointF> MouseDoc; // 상태 표시줄 좌표
         public event Action ViewChanged;
+        public event Action LiquifyStrokeEnd;
+
+        // ---------------- 유동화
+        public LiquifySession Liquify;
+        PointF brushDoc; bool brushVisible, liquifyDown;
+        readonly Timer holdTimer = new Timer { Interval = 40 };
 
         enum Mode { None, Pan, Move, Scale, Rotate }
         Mode mode = Mode.None;
@@ -41,6 +47,7 @@ namespace KKSkinTool
                 g.FillRectangle(Brushes.White, 0, 0, 8, 8); g.FillRectangle(Brushes.White, 8, 8, 8, 8);
             }
             checker = new TextureBrush(cb);
+            holdTimer.Tick += (s, e) => { if (liquifyDown && Liquify != null && !Liquify.Hold().IsEmpty) Invalidate(); };
         }
 
         // ------------------------------------------------------------ 좌표
@@ -86,6 +93,14 @@ namespace KKSkinTool
                 using (var ia = PartLayer.OpacityAttr(WireOpacity)) g.DrawImage(Wire, Rectangle.Round(docRect), 0, 0, Wire.Width, Wire.Height, GraphicsUnit.Pixel, ia);
             using (var pen = new Pen(Color.FromArgb(120, 0, 0, 0))) g.DrawRectangle(pen, docRect.X, docRect.Y, docRect.Width, docRect.Height);
             if (Part != null) DrawHandles(g);
+            if (Liquify != null && brushVisible)
+            {
+                g.SmoothingMode = SmoothingMode.AntiAlias;
+                var c = ToScreen(brushDoc); float r = Liquify.Radius * Zoom;
+                using (var pen = new Pen(Color.FromArgb(200, 255, 255, 255), 2.5f)) g.DrawEllipse(pen, c.X - r, c.Y - r, 2 * r, 2 * r);
+                using (var pen = new Pen(Color.FromArgb(220, 0, 120, 255), 1.2f)) g.DrawEllipse(pen, c.X - r, c.Y - r, 2 * r, 2 * r);
+                g.DrawLine(Pens.DodgerBlue, c.X - 4, c.Y, c.X + 4, c.Y); g.DrawLine(Pens.DodgerBlue, c.X, c.Y - 4, c.X, c.Y + 4);
+            }
         }
 
         void DrawHandles(Graphics g)
@@ -126,6 +141,10 @@ namespace KKSkinTool
             downScreen = e.Location; downDoc = ToDoc(e.Location); downPan = pan;
             if (e.Button == MouseButtons.Middle || e.Button == MouseButtons.Right || (e.Button == MouseButtons.Left && SpaceDown))
             { mode = Mode.Pan; Cursor = Cursors.SizeAll; return; }
+            if (e.Button == MouseButtons.Left && Liquify != null)
+            {
+                liquifyDown = true; Liquify.BeginStroke(downDoc); holdTimer.Start(); Invalidate(); return;
+            }
             if (e.Button != MouseButtons.Left || Part == null) return;
             mode = HitTest(e.Location);
             if (mode != Mode.None) { if (BeginEdit != null) BeginEdit(); downState = Part.S.Clone(); }
@@ -145,6 +164,13 @@ namespace KKSkinTool
         {
             var d = ToDoc(e.Location);
             if (MouseDoc != null) MouseDoc(d);
+            if (Liquify != null && mode != Mode.Pan)
+            {
+                brushDoc = d; brushVisible = true;
+                if (liquifyDown) Liquify.MoveTo(d);
+                Cursor = SpaceDown ? Cursors.SizeAll : Cursors.Cross;
+                Invalidate(); return;
+            }
             switch (mode)
             {
                 case Mode.Pan:
@@ -177,12 +203,24 @@ namespace KKSkinTool
 
         protected override void OnMouseUp(MouseEventArgs e)
         {
+            if (liquifyDown)
+            {
+                liquifyDown = false; holdTimer.Stop();
+                if (Liquify != null) { Liquify.EndStroke(); if (LiquifyStrokeEnd != null) LiquifyStrokeEnd(); }
+            }
             if (mode == Mode.Pan && ViewChanged != null) ViewChanged();
             mode = Mode.None; Cursor = Cursors.Default;
         }
 
+        protected override void OnMouseLeave(EventArgs e) { brushVisible = false; Invalidate(); base.OnMouseLeave(e); }
+
         protected override void OnMouseWheel(MouseEventArgs e)
         {
+            if (Liquify != null && (ModifierKeys & Keys.Alt) != 0)
+            {   // 유동화 중 Alt+휠: 브러시 크기
+                Liquify.Radius = Math.Max(3, Math.Min(800, Liquify.Radius * (e.Delta > 0 ? 1.1f : 1 / 1.1f)));
+                if (LiquifyStrokeEnd != null) LiquifyStrokeEnd(); Invalidate(); return;
+            }
             if (Part != null && (ModifierKeys & Keys.Alt) != 0)
             {   // Alt+휠: 파트 크기 / Alt+Shift+휠: 파트 회전
                 if (BeginEdit != null) BeginEdit();

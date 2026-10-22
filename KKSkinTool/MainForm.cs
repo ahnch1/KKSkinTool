@@ -22,6 +22,11 @@ namespace KKSkinTool
         Label lblPart;
         ToolStripStatusLabel stPos, stZoom, stInfo;
         bool syncing;
+        // 유동화
+        ToolStripButton btnLiq;
+        Panel liqPanel;
+        ComboBox cmbLiqTool;
+        NumericUpDown numLiqSize, numLiqStr;
         readonly string settingsPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "kkskintool_settings.txt");
         string lastPartDir = "", lastSaveDir = "", batchTop = "", batchBottom = "", batchOut = "";
 
@@ -49,6 +54,9 @@ namespace KKSkinTool
             ts.Items.Add(Btn("100%", "Ctrl+1", (s, e) => canvas.SetZoom(1f, new Point(canvas.Width / 2, canvas.Height / 2))));
             ts.Items.Add(new ToolStripSeparator());
             ts.Items.Add(Btn("PNG 저장", "Ctrl+S", (s, e) => SaveResult()));
+            ts.Items.Add(new ToolStripSeparator());
+            btnLiq = Btn("유동화", "L: 결과 이미지를 브러시로 밀기/부풀리기/오므리기/소용돌이/복원", (s, e) => ToggleLiquify());
+            btnLiq.CheckOnClick = false; ts.Items.Add(btnLiq);
             ts.Items.Add(new ToolStripSeparator());
             ts.Items.Add(Btn("TOP × BOTTOM 일괄 조합", "Ctrl+B: TOP 폴더와 BOTTOM 폴더의 모든 조합을 TOP_BOTTOM.png로 저장", (s, e) => OpenBatch()));
 
@@ -93,6 +101,37 @@ namespace KKSkinTool
             };
             side.Controls.Add(help); side.SetColumnSpan(help, 2);
 
+            // ---------------- 유동화 패널 (유동화 모드에서만 보임)
+            liqPanel = new Panel { Dock = DockStyle.Right, Width = 270, Visible = false, Padding = new Padding(8) };
+            var lt = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2 };
+            lt.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90)); lt.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            var lh = new Label { Text = "유동화", AutoSize = true, Font = new Font(Font.FontFamily, 11f, FontStyle.Bold), Padding = new Padding(0, 0, 0, 8) };
+            lt.Controls.Add(lh); lt.SetColumnSpan(lh, 2);
+            lt.Controls.Add(new Label { Text = "도구", AutoSize = true, Padding = new Padding(0, 6, 0, 0) });
+            cmbLiqTool = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
+            cmbLiqTool.Items.AddRange(new object[] { "밀기 (1)", "부풀리기 (2)", "오므리기 (3)", "소용돌이 시계 (4)", "소용돌이 반시계 (5)", "매끄럽게 (6)", "복원 (7)" });
+            cmbLiqTool.SelectedIndex = 0; lt.Controls.Add(cmbLiqTool);
+            numLiqSize = Num(lt, "브러시 크기", 3, 800, 5, 0); numLiqSize.Value = 80;
+            numLiqStr = Num(lt, "강도 %", 1, 100, 5, 0); numLiqStr.Value = 50;
+            var bApply = new Button { Text = "적용 (Enter)", Dock = DockStyle.Fill, Height = 34 }; bApply.Click += (s, e) => EndLiquify(true);
+            var bReset = new Button { Text = "전체 복원", Dock = DockStyle.Fill, Height = 30 };
+            bReset.Click += (s, e) => { if (canvas.Liquify != null) { canvas.Liquify.ResetAll(); canvas.Invalidate(); } };
+            var bCancel = new Button { Text = "취소 (Esc)", Dock = DockStyle.Fill, Height = 30 }; bCancel.Click += (s, e) => EndLiquify(false);
+            foreach (var b in new[] { bApply, bReset, bCancel }) { lt.Controls.Add(b); lt.SetColumnSpan(b, 2); }
+            var lhelp = new Label
+            {
+                AutoSize = false, Dock = DockStyle.Fill, Height = 260, ForeColor = Color.DimGray,
+                Text = "· 왼쪽 드래그: 브러시 적용\n  (부풀리기/오므리기/소용돌이/복원은\n   누르고 있으면 계속 적용)\n" +
+                       "· [ / ] 또는 Alt+휠: 브러시 크기\n· 1~7: 도구 선택\n· Ctrl+Z: 획 단위 실행 취소\n" +
+                       "· 휠: 확대/축소, Space/가운데 드래그: 이동\n\n" +
+                       "원본에서 한 번만 다시 샘플링하므로\n여러 번 문질러도 흐려지지 않습니다.\n적용 후에는 문서 실행 취소(Ctrl+Z)로\n유동화 전체를 되돌릴 수 있습니다."
+            };
+            lt.Controls.Add(lhelp); lt.SetColumnSpan(lhelp, 2);
+            liqPanel.Controls.Add(lt);
+            cmbLiqTool.SelectedIndexChanged += (s, e) => ApplyLiqSettings();
+            numLiqSize.ValueChanged += (s, e) => ApplyLiqSettings();
+            numLiqStr.ValueChanged += (s, e) => ApplyLiqSettings();
+
             // ---------------- 캔버스 / 상태 표시줄
             canvas = new CanvasView { Dock = DockStyle.Fill };
             canvas.PartChanged += SyncFromPart;
@@ -105,7 +144,8 @@ namespace KKSkinTool
             stInfo = new ToolStripStatusLabel("") { Spring = true, TextAlign = ContentAlignment.MiddleLeft };
             st.Items.AddRange(new ToolStripItem[] { stPos, stZoom, stInfo });
 
-            Controls.Add(canvas); Controls.Add(side); Controls.Add(ts); Controls.Add(st);
+            Controls.Add(canvas); Controls.Add(side); Controls.Add(liqPanel); Controls.Add(ts); Controls.Add(st);
+            canvas.LiquifyStrokeEnd += () => { if (canvas.Liquify != null) { syncing = true; numLiqSize.Value = Math.Max(numLiqSize.Minimum, Math.Min(numLiqSize.Maximum, (decimal)canvas.Liquify.Radius)); syncing = false; } };
 
             foreach (var n in new[] { numX, numY, numSX, numSY, numRot, numOpa }) n.ValueChanged += OnPropChanged;
             cmbBlend.SelectedIndexChanged += OnPropChanged; chkFlip.CheckedChanged += OnPropChanged;
@@ -188,6 +228,7 @@ namespace KKSkinTool
         }
         void NewDoc(bool silent = false)
         {
+            if (Liquifying) EndLiquify(false);
             if (!silent && !ConfirmDiscard()) return;
             CancelPart();
             if (doc != null) doc.Dispose();
@@ -196,6 +237,7 @@ namespace KKSkinTool
         }
         void OpenResult()
         {
+            if (Liquifying) EndLiquify(true);
             if (!ConfirmDiscard()) return;
             using (var d = new OpenFileDialog { Filter = "PNG|*.png", Title = "결과 PNG 열기", InitialDirectory = lastSaveDir })
             {
@@ -210,6 +252,7 @@ namespace KKSkinTool
         void SaveResult()
         {
             if (doc == null) return;
+            if (Liquifying) EndLiquify(true);
             if (canvas.Part != null &&
                 MessageBox.Show(this, "배치 중인 파트가 아직 확정되지 않았습니다. 확정하고 저장할까요?", "KKSkinTool", MessageBoxButtons.YesNo) == DialogResult.Yes)
                 CommitPart();
@@ -219,6 +262,40 @@ namespace KKSkinTool
                 doc.Save(d.FileName); lastSaveDir = Path.GetDirectoryName(d.FileName); SaveSettings();
                 stInfo.Text = "저장: " + d.FileName;
             }
+        }
+
+        // ------------------------------------------------------------ 유동화
+        bool Liquifying { get { return canvas.Liquify != null; } }
+        void ToggleLiquify() { if (Liquifying) EndLiquify(true); else StartLiquify(); }
+        void StartLiquify()
+        {
+            if (doc == null) return;
+            if (canvas.Part != null)
+            {
+                var r = MessageBox.Show(this, "배치 중인 파트를 먼저 확정할까요?\n(유동화는 확정된 결과 이미지에 적용됩니다)", "KKSkinTool", MessageBoxButtons.YesNoCancel);
+                if (r == DialogResult.Cancel) return;
+                if (r == DialogResult.Yes) CommitPart(); else CancelPart();
+            }
+            doc.SaveUndoPoint();
+            canvas.Liquify = new LiquifySession(doc.Result);
+            ApplyLiqSettings();
+            liqPanel.Visible = true; liqPanel.BringToFront(); btnLiq.Checked = true;
+            stInfo.Text = "유동화 모드 — Enter 적용, Esc 취소"; canvas.Focus(); canvas.Invalidate();
+        }
+        void EndLiquify(bool apply)
+        {
+            var l = canvas.Liquify; if (l == null) return;
+            if (!apply) { l.Cancel(); doc.DropLastUndo(); stInfo.Text = "유동화 취소"; }
+            else if (!l.Changed) { doc.DropLastUndo(); stInfo.Text = "유동화 종료 (변경 없음)"; }
+            else { doc.Dirty = true; stInfo.Text = "유동화 적용"; }
+            canvas.Liquify = null; liqPanel.Visible = false; btnLiq.Checked = false; canvas.Invalidate();
+        }
+        void ApplyLiqSettings()
+        {
+            var l = canvas.Liquify; if (l == null || syncing) return;
+            l.Tool = (LiquifyTool)Math.Max(0, cmbLiqTool.SelectedIndex);
+            l.Radius = (float)numLiqSize.Value; l.Strength = (float)numLiqStr.Value / 100f;
+            canvas.Invalidate();
         }
 
         // ------------------------------------------------------------ 일괄 조합
@@ -235,6 +312,7 @@ namespace KKSkinTool
         void LoadPart()
         {
             if (doc == null) return;
+            if (Liquifying) EndLiquify(true);
             if (canvas.Part != null)
             {
                 var r = MessageBox.Show(this, "배치 중인 파트를 확정할까요?\n(아니요 = 버리고 새 파트)", "KKSkinTool", MessageBoxButtons.YesNoCancel);
@@ -282,6 +360,7 @@ namespace KKSkinTool
         }
         void DoUndo()
         {
+            if (Liquifying) { canvas.Liquify.Undo(); canvas.Invalidate(); return; }
             if (canvas.Part != null)
             {
                 if (partHistory.Count > 0)
@@ -295,6 +374,7 @@ namespace KKSkinTool
         }
         void DoRedo()
         {
+            if (Liquifying) return;
             if (canvas.Part == null && doc != null && doc.CanRedo) { doc.Redo(); canvas.Invalidate(); stInfo.Text = "다시 실행"; }
         }
 
@@ -350,8 +430,19 @@ namespace KKSkinTool
                 case Keys.Control | Keys.D1: canvas.SetZoom(1f, new Point(canvas.Width / 2, canvas.Height / 2)); return true;
                 case Keys.Control | Keys.Oemplus: canvas.SetZoom(canvas.Zoom * 1.25f, new Point(canvas.Width / 2, canvas.Height / 2)); return true;
                 case Keys.Control | Keys.OemMinus: canvas.SetZoom(canvas.Zoom / 1.25f, new Point(canvas.Width / 2, canvas.Height / 2)); return true;
-                case Keys.Enter: if (canvas.Part != null) { CommitPart(); return true; } break;
-                case Keys.Escape: if (canvas.Part != null) { CancelPart(); return true; } break;
+                case Keys.Enter:
+                    if (Liquifying) { EndLiquify(true); return true; }
+                    if (canvas.Part != null) { CommitPart(); return true; } break;
+                case Keys.Escape:
+                    if (Liquifying) { EndLiquify(false); return true; }
+                    if (canvas.Part != null) { CancelPart(); return true; } break;
+                case Keys.L: if (canvasFocus) { ToggleLiquify(); return true; } break;
+            }
+            if (canvasFocus && Liquifying)
+            {
+                if (keyData == Keys.OemOpenBrackets) { numLiqSize.Value = Math.Max(numLiqSize.Minimum, numLiqSize.Value / 1.15M); return true; }
+                if (keyData == Keys.OemCloseBrackets) { numLiqSize.Value = Math.Min(numLiqSize.Maximum, numLiqSize.Value * 1.15M); return true; }
+                if (keyData >= Keys.D1 && keyData <= Keys.D7) { cmbLiqTool.SelectedIndex = keyData - Keys.D1; return true; }
             }
             if (canvasFocus && canvas.Part != null)
             {
@@ -380,6 +471,7 @@ namespace KKSkinTool
 
         void OnClosingForm(object sender, FormClosingEventArgs e)
         {
+            if (Liquifying) EndLiquify(true);
             if (canvas.Part != null || (doc != null && doc.Dirty))
                 if (MessageBox.Show(this, "저장하지 않은 작업이 있습니다. 종료할까요?", "KKSkinTool", MessageBoxButtons.YesNo) != DialogResult.Yes) { e.Cancel = true; return; }
             SaveSettings();
