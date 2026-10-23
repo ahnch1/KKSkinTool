@@ -51,46 +51,94 @@ namespace KKSkinTool
             Font = new Font("Malgun Gothic", 9f);
 
             // ---------------- 도구 모음
-            var ts = new ToolStrip { GripStyle = ToolStripGripStyle.Hidden, Padding = new Padding(4) };
-            ts.Items.Add(Btn("새 문서", "Ctrl+N", (s, e) => NewDoc()));
-            ts.Items.Add(new ToolStripLabel("배경"));
-            cmbBg = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 120 };
+            // ---------------- 상태 보관용 콤보 (메뉴의 배경·크기 선택이 이 값을 바꿈)
+            cmbBg = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList };
             cmbBg.Items.AddRange(new object[] { "흰색 (탠라인)", "투명 (타투)" }); cmbBg.SelectedIndex = 0;
-            ts.Items.Add(new ToolStripControlHost(cmbBg));
-            ts.Items.Add(new ToolStripLabel("크기"));
-            cmbSize = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 70 };
+            cmbSize = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList };
             foreach (var z in Sizes) cmbSize.Items.Add(z.ToString()); cmbSize.SelectedIndex = 2;
-            ts.Items.Add(new ToolStripControlHost(cmbSize));
-            ts.Items.Add(Btn("결과 열기", "이전에 저장한 결과 PNG를 이어서 작업", (s, e) => OpenResult()));
-            ts.Items.Add(new ToolStripSeparator());
-            ts.Items.Add(Btn("베이스(wireline) 불러오기", "", (s, e) => PickWire()));
+
+            // ---------------- 메뉴
+            var menu = new MenuStrip { Padding = new Padding(4, 2, 0, 2) };
+            // 파일
+            var mFile = new ToolStripMenuItem("파일(&F)");
+            mFile.DropDownItems.Add(Mi("새 문서", "Ctrl+N", (s, e) => NewDoc()));
+            var mBg = new ToolStripMenuItem("배경");
+            for (int i = 0; i < cmbBg.Items.Count; i++) { int k = i; mBg.DropDownItems.Add(Mi(cmbBg.Items[i].ToString(), null, (s, e) => cmbBg.SelectedIndex = k)); }
+            mBg.DropDownOpening += (s, e) => { for (int i = 0; i < mBg.DropDownItems.Count; i++) ((ToolStripMenuItem)mBg.DropDownItems[i]).Checked = i == cmbBg.SelectedIndex; };
+            var mSize = new ToolStripMenuItem("크기");
+            for (int i = 0; i < Sizes.Length; i++) { int k = i; mSize.DropDownItems.Add(Mi(Sizes[i] + " × " + Sizes[i], null, (s, e) => cmbSize.SelectedIndex = k)); }
+            mSize.DropDownOpening += (s, e) => { for (int i = 0; i < mSize.DropDownItems.Count; i++) ((ToolStripMenuItem)mSize.DropDownItems[i]).Checked = i == cmbSize.SelectedIndex; };
+            mFile.DropDownItems.Add(mBg); mFile.DropDownItems.Add(mSize);
+            mFile.DropDownItems.Add(new ToolStripMenuItem("  (배경·크기는 새 문서에 적용)") { Enabled = false });
+            mFile.DropDownItems.Add(new ToolStripSeparator());
+            mFile.DropDownItems.Add(Mi("결과 열기…", null, (s, e) => OpenResult()));
+            mFile.DropDownItems.Add(Mi("PNG 저장…", "Ctrl+S", (s, e) => SaveResult()));
+            mFile.DropDownItems.Add(new ToolStripSeparator());
+            mFile.DropDownItems.Add(Mi("끝내기", "Alt+F4", (s, e) => Close()));
+            // 편집
+            var mEdit = new ToolStripMenuItem("편집(&E)");
+            mEdit.DropDownItems.Add(Mi("파트 불러오기…", "Ctrl+O", (s, e) => LoadPart()));
+            var miRect = Mi("사각 선택", "M", (s, e) => ToggleSelect(CanvasView.SelectTool.Rect));
+            var miLasso = Mi("올가미 선택", "Shift+M", (s, e) => ToggleSelect(CanvasView.SelectTool.Lasso));
+            mEdit.DropDownItems.Add(miRect); mEdit.DropDownItems.Add(miLasso);
+            mEdit.DropDownItems.Add(new ToolStripSeparator());
+            var miLiq = Mi("유동화", "L", (s, e) => ToggleLiquify());
+            mEdit.DropDownItems.Add(miLiq);
+            mEdit.DropDownItems.Add(new ToolStripSeparator());
+            mEdit.DropDownItems.Add(Mi("화면 맞춤", "Ctrl+0", (s, e) => canvas.FitView()));
+            mEdit.DropDownItems.Add(Mi("100%", "Ctrl+1", (s, e) => canvas.SetZoom(1f, new Point(canvas.Width / 2, canvas.Height / 2))));
+            mEdit.DropDownItems.Add(new ToolStripSeparator());
+            var miUndo = Mi("실행 취소", "Ctrl+Z", (s, e) => DoUndo());
+            var miRedo = Mi("다시 실행", "Ctrl+Y", (s, e) => DoRedo());
+            mEdit.DropDownItems.Add(miUndo); mEdit.DropDownItems.Add(miRedo);
+            mEdit.DropDownOpening += (s, e) =>
+            {
+                miRect.Checked = canvas.SelTool == CanvasView.SelectTool.Rect; miLasso.Checked = canvas.SelTool == CanvasView.SelectTool.Lasso;
+                miLiq.Checked = Liquifying;
+                miUndo.Enabled = Liquifying || canvas.Part != null || (doc != null && doc.CanUndo);
+                miRedo.Enabled = !Liquifying && canvas.Part == null && doc != null && doc.CanRedo;
+            };
+            // 3D
+            var m3d = new ToolStripMenuItem("&3D");
+            m3d.DropDownItems.Add(Mi("베이스(wireline) 불러오기…", null, (s, e) => PickWire()));
+            m3d.DropDownItems.Add(Mi("3D 메쉬 (OBJ)…", null, (s, e) => PickBody()));
+            var mView = new ToolStripMenuItem("보기");
+            var viewNames = new[] { "UV", "정면", "후면", "왼쪽", "오른쪽" };
+            for (int i = 0; i < viewNames.Length; i++) { var k = (ViewKind)i; mView.DropDownItems.Add(Mi(viewNames[i], "F" + (i + 2), (s, e) => SetView(k))); }
+            mView.DropDownOpening += (s, e) => { for (int i = 0; i < mView.DropDownItems.Count; i++) ((ToolStripMenuItem)mView.DropDownItems[i]).Checked = i == (int)view; };
+            m3d.DropDownItems.Add(mView);
+            m3d.DropDownItems.Add(new ToolStripSeparator());
+            m3d.DropDownItems.Add(Mi("뷰 내보내기…", null, (s, e) => ExportViews()));
+            m3d.DropDownItems.Add(Mi("뷰 불러오기…", null, (s, e) => ImportViews()));
+            // 도구
+            var mTool = new ToolStripMenuItem("도구(&T)");
+            mTool.DropDownItems.Add(Mi("탠라인 → 타투 (가장 진한 곳 = 불투명)", null, (s, e) => TanToTattoo(true)));
+            mTool.DropDownItems.Add(Mi("탠라인 → 타투 (진하기 그대로)", null, (s, e) => TanToTattoo(false)));
+            mTool.DropDownItems.Add(new ToolStripSeparator());
+            mTool.DropDownItems.Add(Mi("TOP × BOTTOM 일괄 조합…", "Ctrl+B", (s, e) => OpenBatch()));
+            menu.Items.AddRange(new ToolStripItem[] { mFile, mEdit, m3d, mTool });
+            MainMenuStrip = menu;
+
+            // ---------------- 도구 모음 (자주 쓰는 것만)
+            var ts = new ToolStrip { GripStyle = ToolStripGripStyle.Hidden, Padding = new Padding(4) };
+            ts.Items.Add(Btn("새 문서", "Ctrl+N (배경·크기는 파일 메뉴)", (s, e) => NewDoc()));
             ts.Items.Add(Btn("3D 메쉬 (OBJ)", "3D 보기용 메쉬 — 바디(o_body_*.obj)나 의상 OBJ (Material Editor 내보내기). 그룹·앞 방향 선택", (s, e) => PickBody()));
             ts.Items.Add(new ToolStripLabel("보기"));
             cmbView = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 90 };
             cmbView.Items.AddRange(new object[] { "UV (F2)", "정면 (F3)", "후면 (F4)", "왼쪽 (F5)", "오른쪽 (F6)" }); cmbView.SelectedIndex = 0;
             cmbView.SelectedIndexChanged += (s, e) => { if (!syncing) SetView((ViewKind)cmbView.SelectedIndex); };
             ts.Items.Add(new ToolStripControlHost(cmbView));
-            ts.Items.Add(Btn("뷰 내보내기", "정면·후면·좌·우 뷰를 PNG로 내보내기 → 포토샵 등에서 칠하기", (s, e) => ExportViews()));
-            ts.Items.Add(Btn("뷰 불러오기", "칠한 뷰 PNG를 불러와 바뀐 부분만 메쉬에 투영해 굽기 (여러 뷰를 한 번에)", (s, e) => ImportViews()));
+            ts.Items.Add(Btn("PNG 저장", "Ctrl+S", (s, e) => SaveResult()));
             ts.Items.Add(new ToolStripSeparator());
             ts.Items.Add(Btn("파트 불러오기", "Ctrl+O", (s, e) => LoadPart()));
             btnSelRect = Btn("사각 선택", "M: 결과(파트가 없을 때) 또는 배치 중인 파트의 일부를 사각형으로 선택해 이동·크기·회전", (s, e) => ToggleSelect(CanvasView.SelectTool.Rect));
             btnSelLasso = Btn("올가미 선택", "Shift+M: 자유 곡선으로 선택", (s, e) => ToggleSelect(CanvasView.SelectTool.Lasso));
             ts.Items.Add(btnSelRect); ts.Items.Add(btnSelLasso);
-            ts.Items.Add(new ToolStripSeparator());
-            ts.Items.Add(Btn("실행 취소", "Ctrl+Z", (s, e) => DoUndo()));
-            ts.Items.Add(Btn("다시 실행", "Ctrl+Y", (s, e) => DoRedo()));
+            btnLiq = Btn("유동화", "L: 파트가 있으면 파트에, 없으면 결과 이미지에 브러시 변형", (s, e) => ToggleLiquify());
+            ts.Items.Add(btnLiq);
             ts.Items.Add(new ToolStripSeparator());
             ts.Items.Add(Btn("화면 맞춤", "Ctrl+0", (s, e) => canvas.FitView()));
             ts.Items.Add(Btn("100%", "Ctrl+1", (s, e) => canvas.SetZoom(1f, new Point(canvas.Width / 2, canvas.Height / 2))));
-            ts.Items.Add(new ToolStripSeparator());
-            ts.Items.Add(Btn("PNG 저장", "Ctrl+S", (s, e) => SaveResult()));
-            ts.Items.Add(Btn("탠라인 → 타투", "흰 바탕 + 검은 탠라인을 투명 바탕 + 흰색으로 변환 (가장 진한 곳 = 불투명). Shift+클릭: 진하기 그대로", (s, e) => TanToTattoo((ModifierKeys & Keys.Shift) == 0)));
-            ts.Items.Add(new ToolStripSeparator());
-            btnLiq = Btn("유동화", "L: 결과 이미지를 브러시로 밀기/부풀리기/오므리기/소용돌이/복원", (s, e) => ToggleLiquify());
-            btnLiq.CheckOnClick = false; ts.Items.Add(btnLiq);
-            ts.Items.Add(new ToolStripSeparator());
-            ts.Items.Add(Btn("TOP × BOTTOM 일괄 조합", "Ctrl+B: TOP 폴더와 BOTTOM 폴더의 모든 조합을 TOP_BOTTOM.png로 저장", (s, e) => OpenBatch()));
 
             // ---------------- 오른쪽 속성 패널
             var side = new TableLayoutPanel { Dock = DockStyle.Right, Width = 270, ColumnCount = 2, Padding = new Padding(8), AutoScroll = true };
@@ -182,7 +230,7 @@ namespace KKSkinTool
             stInfo = new ToolStripStatusLabel("") { Spring = true, TextAlign = ContentAlignment.MiddleLeft };
             st.Items.AddRange(new ToolStripItem[] { stPos, stZoom, stInfo });
 
-            Controls.Add(canvas); Controls.Add(side); Controls.Add(liqPanel); Controls.Add(ts); Controls.Add(st);
+            Controls.Add(canvas); Controls.Add(side); Controls.Add(liqPanel); Controls.Add(ts); Controls.Add(menu); Controls.Add(st);
             canvas.LiquifyStrokeEnd += () => { if (canvas.Liquify != null) { syncing = true; numLiqSize.Value = Math.Max(numLiqSize.Minimum, Math.Min(numLiqSize.Maximum, (decimal)(canvas.Liquify.Radius * canvas.Liquify.ViewScale))); syncing = false; } };
             canvas.SelectionMade += OnSelection;
 
@@ -196,6 +244,13 @@ namespace KKSkinTool
             FormClosing += OnClosingForm;
         }
 
+        /// <summary>메뉴 항목. 단축키는 표시만 (실제 처리는 ProcessCmdKey — 중복 실행 방지)</summary>
+        static ToolStripMenuItem Mi(string text, string keys, EventHandler click)
+        {
+            var m = new ToolStripMenuItem(text); if (click != null) m.Click += click;
+            if (!string.IsNullOrEmpty(keys)) m.ShortcutKeyDisplayString = keys;
+            return m;
+        }
         static ToolStripButton Btn(string text, string tip, EventHandler click)
         {
             var b = new ToolStripButton(text) { ToolTipText = tip, DisplayStyle = ToolStripItemDisplayStyle.Text }; b.Click += click; return b;
