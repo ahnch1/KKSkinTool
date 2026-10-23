@@ -6,7 +6,9 @@ using System.IO;
 
 namespace KKSkinTool
 {
-    public enum BlendKind { Darken, Multiply, Normal }
+    public enum BlendKind { Darken, Multiply, Normal, Erase }
+    public enum NormalFx { None, Raise, Sink, Flatten }                     // 다른 맵 연동: 노멀
+    public enum DetailFx { None, EdgeShade, Darker, Clear, Gloss }          // 다른 맵 연동: 디테일
 
     /// <summary>배치 중인 파트의 변환·표현 상태 (undo 단위)</summary>
     public class PartState
@@ -15,11 +17,15 @@ namespace KKSkinTool
         public bool FlipH;
         public BlendKind Blend = BlendKind.Darken;
         public int Tint = 0;            // 0 = 색상 변경 없음, 그 외 ARGB (알파 255)
+        public NormalFx NFx = NormalFx.None;
+        public DetailFx DFx = DetailFx.None;
+        public float FxStrength = 0.6f;
         public PartState Clone() { return (PartState)MemberwiseClone(); }
         public bool SameAs(PartState o)
         {
             return o != null && Cx == o.Cx && Cy == o.Cy && ScaleX == o.ScaleX && ScaleY == o.ScaleY && Rotation == o.Rotation
-                && Opacity == o.Opacity && FlipH == o.FlipH && Blend == o.Blend && Tint == o.Tint;
+                && Opacity == o.Opacity && FlipH == o.FlipH && Blend == o.Blend && Tint == o.Tint
+                && NFx == o.NFx && DFx == o.DFx && FxStrength == o.FxStrength;
         }
     }
 
@@ -35,6 +41,9 @@ namespace KKSkinTool
         public PartState S = new PartState();
         public PartLayer Parent;                        // 파트 안에서 잘라낸 선택 영역이면 그 파트
         public Bitmap Backup;                           // 선택 영역을 잘라내기 전 원본 (취소용)
+        public Bitmap[] Extra;                          // 결과에서 떼어낸 선택 영역: 같은 자리의 NormalMap/DetailMask 조각 (레이어 번호 순)
+        public Bitmap[] BackupLayers;                   // 잘라내기 전 모든 레이어
+        public int FloatLayer = -1;                     // 떼어낸 레이어 (MainTex 외 레이어를 보고 있을 때)
         public bool IsFloat { get { return Backup != null; } }
         BlendKind displayFor = (BlendKind)(-1);
 
@@ -64,7 +73,7 @@ namespace KKSkinTool
         {
             if (!force && displayFor == S.Blend && Display != null) return;
             if (Display != null && Display != Source) Display.Dispose();
-            Display = S.Blend == BlendKind.Normal ? Source : Pixels.DarknessToAlpha(Source);
+            Display = S.Blend == BlendKind.Normal || S.Blend == BlendKind.Erase ? Source : Pixels.DarknessToAlpha(Source);
             displayFor = S.Blend;
         }
         /// <summary>원본 일부가 바뀌었을 때(유동화) 미리보기만 그 영역 갱신</summary>
@@ -136,7 +145,11 @@ namespace KKSkinTool
         public ImageAttributes Attr(bool forDisplay)
         {
             var cm = new ColorMatrix { Matrix33 = Math.Max(0f, Math.Min(1f, S.Opacity)) };
-            if (S.Tint != 0)
+            if (S.Blend == BlendKind.Erase && forDisplay)
+            {   // 구멍 미리보기: 자홍색 반투명
+                cm.Matrix00 = cm.Matrix11 = cm.Matrix22 = 0; cm.Matrix40 = 1; cm.Matrix41 = 0; cm.Matrix42 = 1; cm.Matrix33 *= 0.6f;
+            }
+            else if (S.Tint != 0)
             {
                 var t = Color.FromArgb(S.Tint); float r = t.R / 255f, g = t.G / 255f, b = t.B / 255f;
                 if (S.Blend == BlendKind.Normal) { cm.Matrix00 = r; cm.Matrix11 = g; cm.Matrix22 = b; }
@@ -151,6 +164,8 @@ namespace KKSkinTool
             if (Display != null && Display != Source) Display.Dispose();
             if (Source != null) Source.Dispose();
             if (Backup != null) Backup.Dispose();
+            if (Extra != null) foreach (var b in Extra) if (b != null) b.Dispose();
+            if (BackupLayers != null) foreach (var b in BackupLayers) if (b != null) b.Dispose();
         }
     }
 }

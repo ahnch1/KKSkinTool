@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
@@ -38,10 +39,13 @@ namespace KKSkinTool
         PointF last; bool inStroke;
         public bool Changed { get; private set; }
 
-        public LiquifySession(Bitmap result)
+        readonly Bitmap[] extras; readonly byte[][] extraBase;      // 같은 변형을 함께 받는 레이어 (NormalMap/DetailMask)
+        public LiquifySession(Bitmap result, Bitmap[] alsoWarp = null)
         {
             target = result; W = result.Width; H = result.Height;
             basePix = Pixels.Read(result);
+            extras = alsoWarp == null ? new Bitmap[0] : alsoWarp.Where(b => b != null && b.Width == W && b.Height == H).ToArray();
+            extraBase = extras.Select(Pixels.Read).ToArray();
             dx = new float[W * H]; dy = new float[W * H];
             tilesX = (W + Tile - 1) / Tile;
         }
@@ -120,7 +124,12 @@ namespace KKSkinTool
         }
 
         /// <summary>취소: 결과를 시작 시점 그대로 되돌림</summary>
-        public void Cancel() { Pixels.Write(target, basePix); if (Rendered != null) Rendered(new Rectangle(0, 0, W, H)); }
+        public void Cancel()
+        {
+            Pixels.Write(target, basePix);
+            for (int e = 0; e < extras.Length; e++) Pixels.Write(extras[e], extraBase[e]);
+            if (Rendered != null) Rendered(new Rectangle(0, 0, W, H));
+        }
 
         // ------------------------------------------------------------ 브러시 한 번
         Rectangle Dab(PointF c, PointF prev)
@@ -209,6 +218,12 @@ namespace KKSkinTool
         {
             rect = Rectangle.Intersect(rect, new Rectangle(0, 0, W, H));
             if (rect.Width <= 0 || rect.Height <= 0) return;
+            RenderOne(basePix, target, rect);
+            for (int e = 0; e < extras.Length; e++) RenderOne(extraBase[e], extras[e], rect);
+            if (Rendered != null) Rendered(rect);
+        }
+        void RenderOne(byte[] src, Bitmap dst, Rectangle rect)
+        {
             var buf = new byte[rect.Width * rect.Height * 4];
             Parallel.For(0, rect.Height, ry =>
             {
@@ -222,18 +237,16 @@ namespace KKSkinTool
                     int p00 = (y0 * W + x0) * 4, p10 = p00 + 4, p01 = p00 + W * 4, p11 = p01 + 4, o = (ry * rect.Width + rx) * 4;
                     for (int ch = 0; ch < 4; ch++)
                     {
-                        float v = (basePix[p00 + ch] * (1 - ax) + basePix[p10 + ch] * ax) * (1 - ay)
-                                + (basePix[p01 + ch] * (1 - ax) + basePix[p11 + ch] * ax) * ay;
+                        float v = (src[p00 + ch] * (1 - ax) + src[p10 + ch] * ax) * (1 - ay) + (src[p01 + ch] * (1 - ax) + src[p11 + ch] * ax) * ay;
                         buf[o + ch] = (byte)(v + 0.5f);
                     }
                 }
             });
             // 전체를 잠그고 해당 행 구간만 씀 (부분 영역 LockBits는 환경에 따라 동작이 달라 피함)
-            var data = target.LockBits(new Rectangle(0, 0, W, H), ImageLockMode.ReadWrite, PixelFormat.Format32bppArgb);
+            var data = dst.LockBits(new Rectangle(0, 0, W, H), ImageLockMode.ReadWrite, PixelFormat.Format32bppArgb);
             for (int y = 0; y < rect.Height; y++)
                 Marshal.Copy(buf, y * rect.Width * 4, data.Scan0 + (rect.Y + y) * data.Stride + rect.X * 4, rect.Width * 4);
-            target.UnlockBits(data);
-            if (Rendered != null) Rendered(rect);
+            dst.UnlockBits(data);
         }
 
         // ------------------------------------------------------------ 타일 저장/복원

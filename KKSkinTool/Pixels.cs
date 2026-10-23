@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
@@ -70,6 +71,60 @@ namespace KKSkinTool
             return max;
         }
 
+        /// <summary>
+        /// 마스크(box 크기, 128 이상 = 비운 곳) 영역을 바깥에서부터 이웃 평균으로 채움 (양파 껍질 방식).
+        /// 옷 텍스처에서 조각을 옮긴 자리를 원단처럼 메우는 용도
+        /// </summary>
+        public static void InpaintRegion(byte[] px, int W, int H, Rectangle box, byte[] mask)
+        {
+            var hole = new bool[box.Width * box.Height]; int left = 0;
+            for (int i = 0; i < hole.Length; i++) if (mask[i] >= 128) { hole[i] = true; left++; }
+            var next = new List<int>();
+            for (int guard = 0; left > 0 && guard < 4096; guard++)
+            {
+                next.Clear();
+                for (int y = 0; y < box.Height; y++)
+                    for (int x = 0; x < box.Width; x++)
+                    {
+                        int m = y * box.Width + x; if (!hole[m]) continue;
+                        int gx = box.X + x, gy = box.Y + y; bool edge = false;
+                        for (int k = 0; k < 4 && !edge; k++)
+                        {
+                            int nx = gx + (k == 0 ? -1 : k == 1 ? 1 : 0), ny = gy + (k == 2 ? -1 : k == 3 ? 1 : 0);
+                            if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
+                            int lx = nx - box.X, ly = ny - box.Y;
+                            bool inBox = lx >= 0 && ly >= 0 && lx < box.Width && ly < box.Height;
+                            if (!inBox || !hole[ly * box.Width + lx]) edge = true;
+                        }
+                        if (edge) next.Add(m);
+                    }
+                if (next.Count == 0) break;
+                foreach (var m in next)
+                {
+                    int gx = box.X + m % box.Width, gy = box.Y + m / box.Width; int[] acc = new int[4]; int n = 0;
+                    for (int dy = -1; dy <= 1; dy++)
+                        for (int dx = -1; dx <= 1; dx++)
+                        {
+                            int nx = gx + dx, ny = gy + dy; if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
+                            int lx = nx - box.X, ly = ny - box.Y;
+                            if (lx >= 0 && ly >= 0 && lx < box.Width && ly < box.Height && hole[ly * box.Width + lx]) continue;
+                            int i = (ny * W + nx) * 4; for (int c = 0; c < 4; c++) acc[c] += px[i + c]; n++;
+                        }
+                    if (n == 0) continue;
+                    int o = (gy * W + gx) * 4; for (int c = 0; c < 4; c++) px[o + c] = (byte)(acc[c] / n);
+                }
+                foreach (var m in next) { hole[m] = false; left--; }
+            }
+        }
+
+        /// <summary>구멍: part(투명 바탕에 그린 파트)의 알파만큼 target의 알파를 지움</summary>
+        public static void EraseInto(Bitmap target, Bitmap part)
+        {
+            var r = Read(target); var s = Read(part);
+            Parallel.For(0, r.Length / 4, k => { int i = k * 4; int a = s[i + 3]; if (a > 0) r[i + 3] = (byte)(r[i + 3] * (255 - a) / 255); });
+            Write(target, r);
+        }
+
         /// <summary>DarknessToAlpha를 rect 영역만 다시 계산 (dst는 src와 같은 크기)</summary>
         public static void DarknessToAlphaRegion(Bitmap src, Bitmap dst, Rectangle r)
         {
@@ -97,10 +152,15 @@ namespace KKSkinTool
         /// </summary>
         public static Bitmap Lift(Bitmap target, PointF[] poly, Color fill, out Point origin)
         {
+            byte[] mask; Rectangle box; return Lift(target, poly, fill, out origin, out mask, out box, false);
+        }
+        /// <summary>Lift + 잘라낸 자리 마스크 반환. inpaint면 fill 대신 주변 색으로 메움</summary>
+        public static Bitmap Lift(Bitmap target, PointF[] poly, Color fill, out Point origin, out byte[] maskOut, out Rectangle boxOut, bool inpaint)
+        {
             float x0 = float.MaxValue, y0 = float.MaxValue, x1 = float.MinValue, y1 = float.MinValue;
             foreach (var p in poly) { x0 = Math.Min(x0, p.X); y0 = Math.Min(y0, p.Y); x1 = Math.Max(x1, p.X); y1 = Math.Max(y1, p.Y); }
             var box = Rectangle.Intersect(Rectangle.FromLTRB((int)Math.Floor(x0), (int)Math.Floor(y0), (int)Math.Ceiling(x1), (int)Math.Ceiling(y1)), new Rectangle(0, 0, target.Width, target.Height));
-            origin = box.Location;
+            origin = box.Location; maskOut = null; boxOut = box;
             if (box.Width < 2 || box.Height < 2) return null;
             var mask = new byte[box.Width * box.Height];
             using (var mb = new Bitmap(box.Width, box.Height, PixelFormat.Format32bppArgb))
@@ -122,7 +182,8 @@ namespace KKSkinTool
                     for (int c = 0; c < 4; c++) cut[di + c] = all[si + c];
                     all[si] = fill.B; all[si + 1] = fill.G; all[si + 2] = fill.R; all[si + 3] = fill.A;
                 }
-            Write(target, all);
+            if (inpaint) InpaintRegion(all, target.Width, target.Height, box, mask);
+            Write(target, all); maskOut = mask;
             var res = new Bitmap(box.Width, box.Height, PixelFormat.Format32bppArgb); Write(res, cut); return res;
         }
 

@@ -380,7 +380,12 @@ namespace KKSkinTool
                 float wgt = Smooth(((nx * vx + ny * vy + nz * vz) / nl - 0.05f) / 0.25f);
                 if (wgt <= 0) return;
                 int ri = (iy * TW + ix) * 4, oi = i * 4;
-                if (blend == BlendKind.Normal)
+                if (blend == BlendKind.Erase)
+                {
+                    float a = rendered[ri + 3] / 255f * wgt; if (a <= 0) return;
+                    result[oi + 3] = (byte)(result[oi + 3] * (1 - a) + 0.5f);
+                }
+                else if (blend == BlendKind.Normal)
                 {
                     float a = rendered[ri + 3] / 255f * wgt; if (a <= 0) return;
                     for (int c = 0; c < 3; c++) result[oi + c] = (byte)(result[oi + c] * (1 - a) + rendered[ri + c] * a + 0.5f);

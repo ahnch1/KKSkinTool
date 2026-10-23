@@ -33,6 +33,7 @@ namespace KKSkinTool
         ComboBox cmbSize;
         static readonly int[] Sizes = { 512, 1024, 2048, 4096 };
         string lastViewDir = "";
+        ComboBox cmbMap, cmbNFx, cmbDFx; NumericUpDown numFx; Label lblFx;
         ViewKind view = ViewKind.UV;
         ComboBox cmbView;
         readonly System.Collections.Generic.Dictionary<ViewKind, float[][]> viewBuf = new System.Collections.Generic.Dictionary<ViewKind, float[][]>();
@@ -72,7 +73,10 @@ namespace KKSkinTool
             mFile.DropDownItems.Add(new ToolStripMenuItem("  (배경·크기는 새 문서에 적용)") { Enabled = false });
             mFile.DropDownItems.Add(new ToolStripSeparator());
             mFile.DropDownItems.Add(Mi("결과 열기…", null, (s, e) => OpenResult()));
-            mFile.DropDownItems.Add(Mi("PNG 저장…", "Ctrl+S", (s, e) => SaveResult()));
+            mFile.DropDownItems.Add(Mi("PNG 저장… (지금 보는 맵)", "Ctrl+S", (s, e) => SaveResult()));
+            mFile.DropDownItems.Add(new ToolStripSeparator());
+            mFile.DropDownItems.Add(Mi("재질 세트 열기… (MainTex + NormalMap + DetailMask)", null, (s, e) => OpenMaterial()));
+            mFile.DropDownItems.Add(Mi("재질 세트 저장…", null, (s, e) => SaveMaterial()));
             mFile.DropDownItems.Add(new ToolStripSeparator());
             mFile.DropDownItems.Add(Mi("끝내기", "Alt+F4", (s, e) => Close()));
             // 편집
@@ -91,6 +95,11 @@ namespace KKSkinTool
             var miUndo = Mi("실행 취소", "Ctrl+Z", (s, e) => DoUndo());
             var miRedo = Mi("다시 실행", "Ctrl+Y", (s, e) => DoRedo());
             mEdit.DropDownItems.Add(miUndo); mEdit.DropDownItems.Add(miRedo);
+            mEdit.DropDownItems.Add(new ToolStripSeparator());
+            var mMap = new ToolStripMenuItem("맵 보기");
+            for (int i = 0; i < 3; i++) { int k = i; mMap.DropDownItems.Add(Mi(Doc.LayerNames[i], "F" + (7 + i), (s, e) => SetMap(k))); }
+            mMap.DropDownOpening += (s, e) => { for (int i = 0; i < 3; i++) { var it = (ToolStripMenuItem)mMap.DropDownItems[i]; it.Checked = doc != null && doc.Active == i; it.Enabled = i == 0 || (doc != null && doc.Layers[i] != null); } };
+            mEdit.DropDownItems.Add(mMap);
             mEdit.DropDownOpening += (s, e) =>
             {
                 miRect.Checked = canvas.SelTool == CanvasView.SelectTool.Rect; miLasso.Checked = canvas.SelTool == CanvasView.SelectTool.Lasso;
@@ -116,6 +125,10 @@ namespace KKSkinTool
             mTool.DropDownItems.Add(Mi("탠라인 → 타투 (진하기 그대로)", null, (s, e) => TanToTattoo(false)));
             mTool.DropDownItems.Add(new ToolStripSeparator());
             mTool.DropDownItems.Add(Mi("TOP × BOTTOM 일괄 조합…", "Ctrl+B", (s, e) => OpenBatch()));
+            mTool.DropDownItems.Add(new ToolStripSeparator());
+            mTool.DropDownItems.Add(Mi("NormalMap 만들기 (MainTex 밝기 기준)", null, (s, e) => MakeMap(Doc.NORMAL, false)));
+            mTool.DropDownItems.Add(Mi("NormalMap 평평하게 만들기", null, (s, e) => MakeMap(Doc.NORMAL, true)));
+            mTool.DropDownItems.Add(Mi("DetailMask 만들기 (MainTex 기준)", null, (s, e) => MakeMap(Doc.DETAIL, false)));
             menu.Items.AddRange(new ToolStripItem[] { mFile, mEdit, m3d, mTool });
             MainMenuStrip = menu;
 
@@ -128,6 +141,11 @@ namespace KKSkinTool
             cmbView.Items.AddRange(new object[] { "UV (F2)", "정면 (F3)", "후면 (F4)", "왼쪽 (F5)", "오른쪽 (F6)" }); cmbView.SelectedIndex = 0;
             cmbView.SelectedIndexChanged += (s, e) => { if (!syncing) SetView((ViewKind)cmbView.SelectedIndex); };
             ts.Items.Add(new ToolStripControlHost(cmbView));
+            ts.Items.Add(new ToolStripLabel("맵"));
+            cmbMap = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 110 };
+            cmbMap.Items.AddRange(new object[] { "MainTex (F7)", "NormalMap (F8)", "DetailMask (F9)" }); cmbMap.SelectedIndex = 0;
+            cmbMap.SelectedIndexChanged += (s, e) => { if (!syncing) SetMap(cmbMap.SelectedIndex); };
+            ts.Items.Add(new ToolStripControlHost(cmbMap));
             ts.Items.Add(Btn("PNG 저장", "Ctrl+S", (s, e) => SaveResult()));
             ts.Items.Add(new ToolStripSeparator());
             ts.Items.Add(Btn("파트 불러오기", "Ctrl+O", (s, e) => LoadPart()));
@@ -159,9 +177,19 @@ namespace KKSkinTool
             btnTintClear = new Button { Text = "원래대로", Width = 70, Height = 26 };
             btnTint.Click += (s, e) => PickTint(); btnTintClear.Click += (s, e) => SetTint(0);
             tintRow.Controls.Add(btnTint); tintRow.Controls.Add(btnTintClear); side.Controls.Add(tintRow);
+            lblFx = new Label { Text = "다른 맵 연동 (재질 세트, MainTex 편집 시)", AutoSize = true, ForeColor = Color.DimGray, Padding = new Padding(0, 8, 0, 0) };
+            side.Controls.Add(lblFx); side.SetColumnSpan(lblFx, 2);
+            side.Controls.Add(new Label { Text = "노멀", AutoSize = true, Padding = new Padding(0, 6, 0, 0) });
+            cmbNFx = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
+            cmbNFx.Items.AddRange(new object[] { "없음", "볼록 (패치·자수)", "오목 (찢김·구멍)", "평평하게 (결 지움)" }); side.Controls.Add(cmbNFx);
+            side.Controls.Add(new Label { Text = "디테일", AutoSize = true, Padding = new Padding(0, 6, 0, 0) });
+            cmbDFx = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
+            cmbDFx.Items.AddRange(new object[] { "없음", "가장자리 음영", "음영 진하게", "음영 지우기", "광택 부위" }); side.Controls.Add(cmbDFx);
+            numFx = Num(side, "연동 세기 %", 0, 100, 5, 0); numFx.Value = 60;
+            cmbNFx.SelectedIndex = 0; cmbDFx.SelectedIndex = 0;
             side.Controls.Add(new Label { Text = "합성", AutoSize = true, Padding = new Padding(0, 6, 0, 0) });
             cmbBlend = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
-            cmbBlend.Items.AddRange(new object[] { "어둡게 (탠라인)", "곱하기", "일반 (타투)" });
+            cmbBlend.Items.AddRange(new object[] { "어둡게 (탠라인)", "곱하기", "일반 (타투)", "구멍 (알파 지우기)" });
             side.Controls.Add(cmbBlend);
             chkFlip = new CheckBox { Text = "좌우 반전", AutoSize = true };
             side.Controls.Add(new Label()); side.Controls.Add(chkFlip);
@@ -235,7 +263,7 @@ namespace KKSkinTool
             canvas.SelectionMade += OnSelection;
 
             foreach (var n in new[] { numX, numY, numSX, numSY, numRot, numOpa }) n.ValueChanged += OnPropChanged;
-            cmbBlend.SelectedIndexChanged += OnPropChanged; chkFlip.CheckedChanged += OnPropChanged;
+            cmbBlend.SelectedIndexChanged += OnPropChanged; cmbNFx.SelectedIndexChanged += OnPropChanged; cmbDFx.SelectedIndexChanged += OnPropChanged; numFx.ValueChanged += OnPropChanged; chkFlip.CheckedChanged += OnPropChanged;
             chkWire.CheckedChanged += (s, e) => { canvas.ShowWire = chkWire.Checked; canvas.Invalidate(); };
             trkWire.ValueChanged += (s, e) => { canvas.WireOpacity = trkWire.Value / 100f; canvas.Invalidate(); };
 
@@ -326,7 +354,8 @@ namespace KKSkinTool
         {
             if (meshObj != null && (mesh == null || mesh.TW != doc.W || mesh.TH != doc.H)) BuildMesh();
             if (view != ViewKind.UV && mesh == null) { view = ViewKind.UV; SyncViewCombo(); }
-            Text = string.Format("KKSkinTool — {0}×{1}", doc.W, doc.H);
+            Text = string.Format("KKSkinTool — {0}×{1}{2}", doc.W, doc.H, doc.IsMaterial ? "  [재질 세트]" : "");
+            SyncMapCombo();
             RefreshView(true);
         }
 
@@ -366,7 +395,7 @@ namespace KKSkinTool
             if (canvas.Part != null &&
                 MessageBox.Show(this, "배치 중인 파트가 아직 확정되지 않았습니다. 확정하고 저장할까요?", "KKSkinTool", MessageBoxButtons.YesNo) == DialogResult.Yes)
                 CommitPart();
-            using (var d = new SaveFileDialog { Filter = "PNG|*.png", FileName = "skin_result.png", InitialDirectory = lastSaveDir })
+            using (var d = new SaveFileDialog { Filter = "PNG|*.png", FileName = doc.LayerFiles[doc.Active] ?? (doc.IsMaterial ? Doc.LayerNames[doc.Active] + ".png" : "skin_result.png"), InitialDirectory = lastSaveDir })
             {
                 if (d.ShowDialog(this) != DialogResult.OK) return;
                 doc.Save(d.FileName); lastSaveDir = Path.GetDirectoryName(d.FileName); SaveSettings();
@@ -388,6 +417,7 @@ namespace KKSkinTool
             }
             int max = 0;
             Cursor = Cursors.WaitCursor;
+            if (doc.Active != Doc.MAIN) SetMap(Doc.MAIN);
             try { doc.ApplyPixels(px => max = Pixels.TanToWhiteAlpha(px, normalize)); }
             finally { Cursor = Cursors.Default; }
             if (max == 0) { doc.Undo(); stInfo.Text = "변환할 어두운 영역이 없습니다"; return; }
@@ -474,7 +504,7 @@ namespace KKSkinTool
                     viewBuf.Clear();                                                  // 4096에서도 메모리 부담 없게 현재 보기만 보관
                     float[] z, uv, sh; mesh.RenderBuffers(view, out z, out uv, out sh); viewBuf[view] = b = new[] { z, uv, sh };
                 }
-                canvas.ViewImage = mesh.RenderView(view, doc.Result, b[0], b[1], b[2]);
+                canvas.ViewImage = mesh.RenderView(view, doc.ActiveBitmap, b[0], b[1], b[2]);
                 Cursor = Cursors.Default;
             }
             if (old != null && old != canvas.ViewImage) old.Dispose();
@@ -497,7 +527,122 @@ namespace KKSkinTool
                     g.DrawImage(p.Source, new Rectangle(0, 0, p.W, p.H), 0, 0, p.W, p.H, GraphicsUnit.Pixel, ia);
                 }
                 var rendered = Pixels.Read(tmp);
-                doc.ApplyPixels(px => mesh.Bake(view, rendered, p.S.Blend, px, b[0]));
+                bool fx = HasFx(p);
+                doc.ApplyAll(px =>
+                {
+                    mesh.Bake(view, rendered, p.S.Blend, px[doc.Active], b[0]);
+                    if (!fx) return;
+                    var cb = new byte[doc.W * doc.H * 4];                                  // 투영된 덮임 정도
+                    mesh.Bake(view, MaterialGen.CoverageImage(rendered, p.S.Blend), BlendKind.Normal, cb, b[0]);
+                    var cov = new float[doc.W * doc.H]; for (int i = 0; i < cov.Length; i++) cov[i] = cb[i * 4 + 3] / 255f;
+                    if (px[Doc.NORMAL] != null) MaterialGen.ApplyNormalFx(px[Doc.NORMAL], cov, doc.W, doc.H, p.S.NFx, p.S.FxStrength);
+                    if (px[Doc.DETAIL] != null) MaterialGen.ApplyDetailFx(px[Doc.DETAIL], cov, doc.W, doc.H, p.S.DFx, p.S.FxStrength);
+                });
+            }
+        }
+
+        // ------------------------------------------------------------ 재질 세트 (MainTex + NormalMap + DetailMask)
+        bool HasFx(PartLayer p)
+        {
+            return doc != null && doc.IsMaterial && doc.Active == Doc.MAIN && !p.IsFloat && (p.S.NFx != NormalFx.None || p.S.DFx != DetailFx.None) && p.S.FxStrength > 0;
+        }
+        /// <summary>파트가 덮은 정도로 NormalMap/DetailMask 수정 (직전 확정과 같은 실행 취소 단계)</summary>
+        void ApplyFx(float[] cov, PartState st)
+        {
+            if (doc.Layers[Doc.NORMAL] != null && st.NFx != NormalFx.None)
+            { var n = Pixels.Read(doc.Layers[Doc.NORMAL]); MaterialGen.ApplyNormalFx(n, cov, doc.W, doc.H, st.NFx, st.FxStrength); Pixels.Write(doc.Layers[Doc.NORMAL], n); }
+            if (doc.Layers[Doc.DETAIL] != null && st.DFx != DetailFx.None)
+            { var d = Pixels.Read(doc.Layers[Doc.DETAIL]); MaterialGen.ApplyDetailFx(d, cov, doc.W, doc.H, st.DFx, st.FxStrength); Pixels.Write(doc.Layers[Doc.DETAIL], d); }
+        }
+        void SetMap(int i)
+        {
+            if (doc == null) return;
+            if (i != Doc.MAIN && doc.Layers[i] == null)
+            {
+                if (MessageBox.Show(this, Doc.LayerNames[i] + "이(가) 없습니다. MainTex를 기준으로 만들까요?", "KKSkinTool", MessageBoxButtons.YesNo) != DialogResult.Yes) { SyncMapCombo(); return; }
+                MakeMap(i, false); if (doc.Layers[i] == null) { SyncMapCombo(); return; }
+            }
+            if (i == doc.Active) { SyncMapCombo(); return; }
+            if (canvas.Part != null && canvas.Part.IsFloat && !ResolveActive(true)) { SyncMapCombo(); return; }
+            if (Liquifying) EndLiquify(true);
+            doc.Active = i; SyncMapCombo(); UpdatePartUi(); RefreshView();
+            stInfo.Text = "맵: " + Doc.LayerNames[i] + (i == Doc.MAIN ? "" : " — 이 맵에 직접 칠하기. 선택·유동화는 모든 맵에 같은 변형 적용");
+        }
+        void SyncMapCombo() { syncing = true; cmbMap.SelectedIndex = doc != null ? doc.Active : 0; syncing = false; }
+        /// <summary>NormalMap/DetailMask 만들기 (있으면 덮어씀, 실행 취소 가능)</summary>
+        void MakeMap(int i, bool flat)
+        {
+            if (doc == null) return;
+            if (doc.Layers[i] != null && MessageBox.Show(this, Doc.LayerNames[i] + "을(를) 새로 만들어 덮어쓸까요? (Ctrl+Z로 되돌릴 수 있음)", "KKSkinTool", MessageBoxButtons.YesNo) != DialogResult.Yes) return;
+            Cursor = Cursors.WaitCursor;
+            try
+            {
+                var b = i == Doc.NORMAL ? (flat ? MaterialGen.FlatNormal(doc.W, doc.H) : MaterialGen.GenerateNormal(doc.Result)) : MaterialGen.GenerateDetail(doc.Result);
+                if (doc.Layers[i] == null) doc.SetLayer(i, b, Doc.LayerNames[i] + ".png");
+                else { var px = Pixels.Read(b); b.Dispose(); doc.ApplyLayer(i, d => Array.Copy(px, d, px.Length)); }
+                doc.Dirty = true;
+                stInfo.Text = Doc.LayerNames[i] + (flat ? " (평평)" : " (MainTex 기준)") + " 만듦";
+            }
+            finally { Cursor = Cursors.Default; }
+            UpdatePartUi(); RefreshView();
+        }
+        static string FindCompanion(string dir, string mainFile, string[] keys)
+        {
+            foreach (var f in Directory.GetFiles(dir, "*.png"))
+            {
+                if (string.Equals(f, mainFile, StringComparison.OrdinalIgnoreCase)) continue;
+                var n = Path.GetFileNameWithoutExtension(f).ToLowerInvariant();
+                if (keys.Any(k => n.Contains(k))) return f;
+            }
+            return null;
+        }
+        void OpenMaterial()
+        {
+            if (Liquifying) EndLiquify(true);
+            if (!ConfirmDiscard()) return;
+            using (var d = new OpenFileDialog { Filter = "PNG|*.png", Title = "MainTex 선택 (같은 폴더의 NormalMap·DetailMask를 함께 엶)", InitialDirectory = lastSaveDir })
+            {
+                if (d.ShowDialog(this) != DialogResult.OK) return;
+                while (canvas.Part != null) CancelPart();
+                if (doc != null) doc.Dispose();
+                Cursor = Cursors.WaitCursor;
+                var notes = new List<string>();
+                try
+                {
+                    doc = Doc.Open(d.FileName, 0, 0); doc.TransparentBg = false;
+                    string dir = Path.GetDirectoryName(d.FileName);
+                    var nf = FindCompanion(dir, d.FileName, new[] { "normalmap", "normal", "_nml", "_nrm", "bump" });
+                    var df = FindCompanion(dir, d.FileName, new[] { "detailmask", "detail" });
+                    if (nf != null) { doc.SetLayer(Doc.NORMAL, Doc.LoadBitmap(nf, 0, 0), Path.GetFileName(nf)); notes.Add("NormalMap: " + Path.GetFileName(nf)); }
+                    else { doc.SetLayer(Doc.NORMAL, MaterialGen.GenerateNormal(doc.Result), "NormalMap.png"); notes.Add("NormalMap 없음 → MainTex 기준으로 만듦"); doc.Dirty = true; }
+                    if (df != null) { doc.SetLayer(Doc.DETAIL, Doc.LoadBitmap(df, 0, 0), Path.GetFileName(df)); notes.Add("DetailMask: " + Path.GetFileName(df)); }
+                    else { doc.SetLayer(Doc.DETAIL, MaterialGen.GenerateDetail(doc.Result), "DetailMask.png"); notes.Add("DetailMask 없음 → MainTex 기준으로 만듦"); doc.Dirty = true; }
+                    lastSaveDir = dir; SaveSettings();
+                }
+                catch (Exception ex) { MessageBox.Show(this, "열 수 없습니다.\n" + ex.Message); NewDoc(true); return; }
+                finally { Cursor = Cursors.Default; }
+                int si = Array.IndexOf(Sizes, doc.W); if (si >= 0 && doc.W == doc.H) cmbSize.SelectedIndex = si;
+                cmbBg.SelectedIndex = 0; canvas.Doc = doc; SyncMapCombo(); AfterDocChanged(); UpdatePartUi();
+                stInfo.Text = "재질 세트: " + Path.GetFileName(d.FileName) + " | " + string.Join(" | ", notes) + "  (F7/F8/F9로 맵 전환)";
+            }
+        }
+        void SaveMaterial()
+        {
+            if (doc == null) return;
+            if (Liquifying) EndLiquify(true);
+            if (!ResolveActive()) return;
+            using (var d = new FolderBrowserDialog { Description = "재질 세트를 저장할 폴더 (같은 이름이 있으면 덮어씀)", SelectedPath = lastSaveDir })
+            {
+                if (d.ShowDialog(this) != DialogResult.OK) return;
+                var saved = new List<string>();
+                for (int i = 0; i < 3; i++)
+                {
+                    if (doc.Layers[i] == null) continue;
+                    var name = doc.LayerFiles[i] ?? (Doc.LayerNames[i] + ".png");
+                    doc.Layers[i].Save(Path.Combine(d.SelectedPath, name), System.Drawing.Imaging.ImageFormat.Png); saved.Add(name);
+                }
+                doc.Dirty = false; lastSaveDir = d.SelectedPath; SaveSettings();
+                stInfo.Text = "저장: " + string.Join(", ", saved) + " → " + d.SelectedPath;
             }
         }
 
@@ -513,7 +658,7 @@ namespace KKSkinTool
                 if (File.Exists(Path.Combine(d.SelectedPath, "front.png")) &&
                     MessageBox.Show(this, "이 폴더에 이미 뷰 이미지가 있습니다. 덮어쓸까요?", "KKSkinTool", MessageBoxButtons.YesNo) != DialogResult.Yes) return;
                 Cursor = Cursors.WaitCursor;
-                try { ViewExchange.Export(mesh, doc.Result, d.SelectedPath, v => { stInfo.Text = "내보내는 중: " + v; Application.DoEvents(); }); }
+                try { ViewExchange.Export(mesh, doc.ActiveBitmap, d.SelectedPath, v => { stInfo.Text = "내보내는 중: " + v; Application.DoEvents(); }); }
                 catch (Exception ex) { MessageBox.Show(this, "내보내기 실패\n" + ex.Message); return; }
                 finally { Cursor = Cursors.Default; }
                 lastViewDir = d.SelectedPath; SaveSettings();
@@ -542,7 +687,7 @@ namespace KKSkinTool
                     var edits = ViewExchange.LoadEdits(d.SelectedPath, doc.W, doc.H, 6, m => { stInfo.Text = m; Application.DoEvents(); });
                     if (edits.Count == 0) { stInfo.Text = "바뀐 픽셀이 없습니다 (원본과 같음)"; return; }
                     int n = 0;
-                    doc.ApplyPixels(px => n = mesh.BakeViews(edits, px));
+                    doc.ApplyLayer(doc.Active, px => n = mesh.BakeViews(edits, px));
                     lastViewDir = d.SelectedPath; SaveSettings();
                     RefreshView();
                     stInfo.Text = string.Format("뷰 불러오기: {0}개 뷰에서 텍셀 {1:N0}개 반영 (Ctrl+Z로 되돌리기)", edits.Count, n);
@@ -574,7 +719,8 @@ namespace KKSkinTool
             {
                 if (view != ViewKind.UV) { SetView(ViewKind.UV); if (view != ViewKind.UV) return; }
                 doc.SaveUndoPoint();
-                canvas.Liquify = new LiquifySession(doc.Result);
+                // 지금 맵을 유동화하고, 재질 세트의 나머지 맵도 같은 변형을 받음 (위치가 어긋나지 않게)
+                canvas.Liquify = new LiquifySession(doc.ActiveBitmap, doc.Layers.Where((l, i) => l != null && i != doc.Active).ToArray());
                 stInfo.Text = "결과 유동화 — Enter 적용, Esc 취소";
             }
             SetSelectTool(CanvasView.SelectTool.None);
@@ -634,6 +780,24 @@ namespace KKSkinTool
                 fl = new PartLayer(bmp, "선택 영역 (" + part.Name + ")", part.S.Blend) { Parent = part, Backup = backup };
                 fl.S.Cx = o.X + bmp.Width / 2f; fl.S.Cy = o.Y + bmp.Height / 2f;
                 parentHistory = new List<PartState>(partHistory);
+            }
+            else if (doc.IsMaterial)
+            {   // 재질 세트: 지금 맵을 떼고, 나머지 맵의 같은 자리도 함께 뗌. 빈 자리는 주변 원단으로 메움
+                var backups = doc.Layers.Select(l => l == null ? null : (Bitmap)l.Clone()).ToArray();
+                Point o = Point.Empty; Bitmap main = null; var extra = new Bitmap[3];
+                for (int i = 0; i < 3; i++)
+                {
+                    if (doc.Layers[i] == null) continue;
+                    byte[] mk; Rectangle bx; Point oi;
+                    var piece = Pixels.Lift(doc.Layers[i], poly, Color.Transparent, out oi, out mk, out bx, true);
+                    if (piece == null) continue;
+                    if (i == doc.Active) { main = piece; o = oi; } else extra[i] = piece;
+                }
+                if (main == null) { foreach (var b in backups) if (b != null) b.Dispose(); foreach (var b in extra) if (b != null) b.Dispose(); return; }
+                fl = new PartLayer(main, "선택 영역 (" + Doc.LayerNames[doc.Active] + " + 연결된 맵)", BlendKind.Normal)
+                { Backup = (Bitmap)backups[doc.Active].Clone(), BackupLayers = backups, Extra = extra, FloatLayer = doc.Active };
+                fl.S.Cx = o.X + main.Width / 2f; fl.S.Cy = o.Y + main.Height / 2f;
+                parentHistory = null;
             }
             else
             {   // 결과 이미지 일부
@@ -721,7 +885,11 @@ namespace KKSkinTool
                     stInfo.Text = "선택 영역을 파트에 반영 — 파트는 계속 배치 중";
                     UpdatePartUi(); SyncFromPart(); canvas.Invalidate(); return;
                 }
-                if (view == ViewKind.UV || p.IsFloat) doc.Commit(p);
+                if (view == ViewKind.UV || p.IsFloat)
+                {
+                    doc.Commit(p);
+                    if (!p.IsFloat && HasFx(p)) ApplyFx(MaterialGen.Coverage(p, doc.W, doc.H), p.S);     // 같은 실행 취소 단계 안에서
+                }
                 else CommitProjected(p);
             }
             finally { Cursor = Cursors.Default; }
@@ -741,7 +909,7 @@ namespace KKSkinTool
                 canvas.Part = parent; partHistory.Clear(); if (parentHistory != null) partHistory.AddRange(parentHistory);
                 stInfo.Text = "선택 영역 취소"; UpdatePartUi(); SyncFromPart(); canvas.Invalidate(); return;
             }
-            if (p.IsFloat) { doc.RestoreFrom(p.Backup); stInfo.Text = "선택 영역 취소"; }
+            if (p.IsFloat) { if (p.BackupLayers != null) doc.RestoreFrom(p.BackupLayers); else doc.RestoreFrom(p.Backup); stInfo.Text = "선택 영역 취소"; }
             p.Dispose(); canvas.Part = null; partHistory.Clear();
             UpdatePartUi(); RefreshView();
         }
@@ -780,6 +948,8 @@ namespace KKSkinTool
         {
             bool on = canvas.Part != null;
             foreach (Control c in new Control[] { numX, numY, numSX, numSY, numRot, numOpa, chkLock, cmbBlend, chkFlip, btnCommit, btnCancel, btnTint, btnTintClear }) c.Enabled = on;
+            bool fx = on && doc != null && doc.IsMaterial && doc.Active == Doc.MAIN && !canvas.Part.IsFloat;
+            foreach (Control c in new Control[] { cmbNFx, cmbDFx, numFx, lblFx }) c.Enabled = fx;
             lblPart.Text = on ? string.Format("{0}\n{1}×{2}{3}", canvas.Part.Name, canvas.Part.W, canvas.Part.H, canvas.Part.Parent != null ? "  (좌표: 파트 기준)" : "")
                               : "파트 없음 (Ctrl+O 불러오기 / M 영역 선택)";
         }
@@ -792,6 +962,7 @@ namespace KKSkinTool
             numSX.Value = Clamp(numSX, p.S.ScaleX * 100); numSY.Value = Clamp(numSY, p.S.ScaleY * 100);
             numRot.Value = Clamp(numRot, p.S.Rotation); numOpa.Value = Clamp(numOpa, p.S.Opacity * 100);
             cmbBlend.SelectedIndex = (int)p.S.Blend; chkFlip.Checked = p.S.FlipH;
+            cmbNFx.SelectedIndex = (int)p.S.NFx; cmbDFx.SelectedIndex = (int)p.S.DFx; numFx.Value = Clamp(numFx, p.S.FxStrength * 100);
             btnTint.BackColor = p.S.Tint != 0 ? Color.FromArgb(p.S.Tint) : SystemColors.Control;
             btnTint.ForeColor = p.S.Tint != 0 && Color.FromArgb(p.S.Tint).GetBrightness() < 0.5f ? Color.White : Color.Black;
             syncing = false;
@@ -810,6 +981,7 @@ namespace KKSkinTool
             p.S.ScaleX = sx; p.S.ScaleY = sy;
             p.S.Rotation = (float)numRot.Value; p.S.Opacity = (float)numOpa.Value / 100f;
             p.S.Blend = (BlendKind)Math.Max(0, cmbBlend.SelectedIndex); p.S.FlipH = chkFlip.Checked;
+            p.S.NFx = (NormalFx)Math.Max(0, cmbNFx.SelectedIndex); p.S.DFx = (DetailFx)Math.Max(0, cmbDFx.SelectedIndex); p.S.FxStrength = (float)numFx.Value / 100f;
             p.RefreshDisplay(); SyncFromPart(); canvas.Invalidate();
         }
 
@@ -831,6 +1003,9 @@ namespace KKSkinTool
                 case Keys.F4: SetView(ViewKind.Back); return true;
                 case Keys.F5: SetView(ViewKind.Left); return true;
                 case Keys.F6: SetView(ViewKind.Right); return true;
+                case Keys.F7: SetMap(Doc.MAIN); return true;
+                case Keys.F8: SetMap(Doc.NORMAL); return true;
+                case Keys.F9: SetMap(Doc.DETAIL); return true;
                 case Keys.Control | Keys.D0: canvas.FitView(); return true;
                 case Keys.Control | Keys.D1: canvas.SetZoom(1f, new Point(canvas.Width / 2, canvas.Height / 2)); return true;
                 case Keys.Control | Keys.Oemplus: canvas.SetZoom(canvas.Zoom * 1.25f, new Point(canvas.Width / 2, canvas.Height / 2)); return true;

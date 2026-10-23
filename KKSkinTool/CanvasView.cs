@@ -85,10 +85,10 @@ namespace KKSkinTool
             var g = e.Graphics; g.Clear(BackColor);
             if (Doc == null) return;
             var docRect = new RectangleF(pan.X, pan.Y, Doc.W * Zoom, Doc.H * Zoom);
-            if (Doc.TransparentBg && ViewImage == null) g.FillRectangle(checker, docRect);
+            if (ViewImage == null) g.FillRectangle(checker, docRect);           // 투명·구멍이 보이도록 항상 체크무늬 바탕
             g.InterpolationMode = Zoom >= 1.5f ? InterpolationMode.NearestNeighbor : InterpolationMode.Bilinear;
             g.PixelOffsetMode = PixelOffsetMode.Half;
-            g.DrawImage(ViewImage ?? Doc.Result, docRect);
+            g.DrawImage(ViewImage ?? Doc.ActiveBitmap, docRect);
             if (Part != null)
             {
                 if (Part.Parent != null) DrawLayer(g, Part.Parent);       // 파트 안 선택 영역: 부모 파트(구멍 난 상태) 먼저
