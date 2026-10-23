@@ -29,7 +29,9 @@ namespace KKSkinTool
         PartLayer liquifyPart;
         List<PartState> parentHistory;
         // 3D 보기
-        BodyMesh body; string bodyPath = "";
+        MeshModel mesh; ObjFile meshObj; string bodyPath = "", meshAxis = "+z"; string[] meshGroups;
+        ComboBox cmbSize;
+        static readonly int[] Sizes = { 512, 1024, 2048, 4096 };
         ViewKind view = ViewKind.UV;
         ComboBox cmbView;
         readonly System.Collections.Generic.Dictionary<ViewKind, float[][]> viewBuf = new System.Collections.Generic.Dictionary<ViewKind, float[][]>();
@@ -54,10 +56,14 @@ namespace KKSkinTool
             cmbBg = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 120 };
             cmbBg.Items.AddRange(new object[] { "흰색 (탠라인)", "투명 (타투)" }); cmbBg.SelectedIndex = 0;
             ts.Items.Add(new ToolStripControlHost(cmbBg));
+            ts.Items.Add(new ToolStripLabel("크기"));
+            cmbSize = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 70 };
+            foreach (var z in Sizes) cmbSize.Items.Add(z.ToString()); cmbSize.SelectedIndex = 2;
+            ts.Items.Add(new ToolStripControlHost(cmbSize));
             ts.Items.Add(Btn("결과 열기", "이전에 저장한 결과 PNG를 이어서 작업", (s, e) => OpenResult()));
             ts.Items.Add(new ToolStripSeparator());
             ts.Items.Add(Btn("베이스(wireline) 불러오기", "", (s, e) => PickWire()));
-            ts.Items.Add(Btn("바디 OBJ", "3D 보기용 바디 메쉬 (Material Editor로 내보낸 o_body_*.obj)", (s, e) => PickBody()));
+            ts.Items.Add(Btn("3D 메쉬 (OBJ)", "3D 보기용 메쉬 — 바디(o_body_*.obj)나 의상 OBJ (Material Editor 내보내기). 그룹·앞 방향 선택", (s, e) => PickBody()));
             ts.Items.Add(new ToolStripLabel("보기"));
             cmbView = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 90 };
             cmbView.Items.AddRange(new object[] { "UV (F2)", "정면 (F3)", "후면 (F4)", "왼쪽 (F5)", "오른쪽 (F6)" }); cmbView.SelectedIndex = 0;
@@ -126,7 +132,7 @@ namespace KKSkinTool
                        "· 파트 안 드래그: 이동\n· 모서리 사각형: 크기\n· 주황 원: 회전 (Shift: 15° 단위)\n" +
                        "· 방향키: 1px 이동 (Shift: 10px)\n· Alt+휠: 크기, Alt+Shift+휠: 회전\n\n" +
                        "· 휠: 확대/축소\n· 가운데·오른쪽 드래그, Space+드래그: 화면 이동\n\n" +
-                       "· Enter 확정, Esc 취소\n· Ctrl+Z 실행 취소, Ctrl+Y 다시 실행\n· Ctrl+O 파트, Ctrl+S 저장, Ctrl+0 맞춤\n· Ctrl+B TOP × BOTTOM 일괄 조합\n· L 유동화 (파트가 있으면 파트에, 없으면 결과에)\n· M 사각 선택 / Shift+M 올가미: 파트 일부 또는\n  결과 일부를 떼어 이동·크기·회전 → Enter/Esc\n· 색상 변경: 오른쪽 [변경…]\n· [탠라인 → 타투] 투명 바탕 흰색 변환\n  (Shift+클릭: 진하기 그대로)\n· F2 UV / F3 정면 / F4 후면 / F5·F6 옆 보기\n  (3D 보기에서 확정하면 몸에 투영)"
+                       "· Enter 확정, Esc 취소\n· Ctrl+Z 실행 취소, Ctrl+Y 다시 실행\n· Ctrl+O 파트, Ctrl+S 저장, Ctrl+0 맞춤\n· Ctrl+B TOP × BOTTOM 일괄 조합\n· L 유동화 (파트가 있으면 파트에, 없으면 결과에)\n· M 사각 선택 / Shift+M 올가미: 파트 일부 또는\n  결과 일부를 떼어 이동·크기·회전 → Enter/Esc\n· 색상 변경: 오른쪽 [변경…]\n· [탠라인 → 타투] 투명 바탕 흰색 변환\n  (Shift+클릭: 진하기 그대로)\n· F2 UV / F3 정면 / F4 후면 / F5·F6 옆 보기\n  (3D 보기에서 확정하면 메쉬에 투영)"
             };
             side.Controls.Add(help); side.SetColumnSpan(help, 2);
 
@@ -217,10 +223,13 @@ namespace KKSkinTool
             if (l.Length > 4) batchBottom = l[4];
             if (l.Length > 5) batchOut = l[5];
             if (l.Length > 6) bodyPath = l[6];
+            if (l.Length > 7 && l[7].Length > 0) meshGroups = l[7].Split('\t');
+            if (l.Length > 8 && l[8].Length > 0) meshAxis = l[8];
+            int sz; if (l.Length > 9 && int.TryParse(l[9], out sz) && Array.IndexOf(Sizes, sz) >= 0) cmbSize.SelectedIndex = Array.IndexOf(Sizes, sz);
         }
         void SaveSettings()
         {
-            try { File.WriteAllLines(settingsPath, new[] { wirePath ?? "", lastPartDir ?? "", lastSaveDir ?? "", batchTop ?? "", batchBottom ?? "", batchOut ?? "", bodyPath ?? "" }); } catch { }
+            try { File.WriteAllLines(settingsPath, new[] { wirePath ?? "", lastPartDir ?? "", lastSaveDir ?? "", batchTop ?? "", batchBottom ?? "", batchOut ?? "", bodyPath ?? "", meshGroups != null ? string.Join("\t", meshGroups) : "", meshAxis ?? "+z", Sizes[Math.Max(0, cmbSize.SelectedIndex)].ToString() }); } catch { }
         }
 
         // ------------------------------------------------------------ 베이스 / 문서
@@ -249,8 +258,18 @@ namespace KKSkinTool
             }
             catch (Exception ex) { MessageBox.Show(this, "베이스를 열 수 없습니다.\n" + ex.Message); }
         }
-        int DocW { get { return wireSrc != null ? wireSrc.Width : 2048; } }
-        int DocH { get { return wireSrc != null ? wireSrc.Height : 2048; } }
+        /// <summary>새 문서 크기 (도구 모음 "크기": 512 / 1024 / 2048 / 4096)</summary>
+        int DocW { get { return Sizes[Math.Max(0, cmbSize.SelectedIndex)]; } }
+        int DocH { get { return DocW; } }
+
+        /// <summary>문서 크기가 바뀌면 메쉬 텍셀 지도와 와이어를 그 크기로 다시 만듦</summary>
+        void AfterDocChanged()
+        {
+            if (meshObj != null && (mesh == null || mesh.TW != doc.W || mesh.TH != doc.H)) BuildMesh();
+            if (view != ViewKind.UV && mesh == null) { view = ViewKind.UV; SyncViewCombo(); }
+            Text = string.Format("KKSkinTool — {0}×{1}", doc.W, doc.H);
+            RefreshView(true);
+        }
 
         bool ConfirmDiscard()
         {
@@ -264,7 +283,7 @@ namespace KKSkinTool
             while (canvas.Part != null) CancelPart();
             if (doc != null) doc.Dispose();
             doc = new Doc(DocW, DocH, cmbBg.SelectedIndex == 1);
-            canvas.Doc = doc; RefreshView(true);
+            canvas.Doc = doc; AfterDocChanged();
         }
         void OpenResult()
         {
@@ -275,9 +294,10 @@ namespace KKSkinTool
                 if (d.ShowDialog(this) != DialogResult.OK) return;
                 while (canvas.Part != null) CancelPart();
                 if (doc != null) doc.Dispose();
-                doc = Doc.Open(d.FileName, DocW, DocH);
+                doc = Doc.Open(d.FileName, 0, 0);                                    // 이미지 원래 크기 그대로 (예: 의상 MainTex 4096)
+                int si = Array.IndexOf(Sizes, doc.W); if (si >= 0 && doc.W == doc.H) cmbSize.SelectedIndex = si;
                 cmbBg.SelectedIndex = doc.TransparentBg ? 1 : 0;
-                canvas.Doc = doc; RefreshView(true);
+                canvas.Doc = doc; AfterDocChanged();
             }
         }
         void SaveResult()
@@ -322,26 +342,48 @@ namespace KKSkinTool
         // ------------------------------------------------------------ 3D 보기 / 투영
         void PickBody()
         {
-            using (var d = new OpenFileDialog { Filter = "OBJ|*.obj", Title = "바디 메쉬 OBJ (Material Editor 내보내기)" })
-                if (d.ShowDialog(this) == DialogResult.OK && LoadBody(d.FileName)) { SaveSettings(); if (view != ViewKind.UV) RefreshView(true); }
+            using (var d = new OpenFileDialog { Filter = "OBJ|*.obj", Title = "3D 메쉬 OBJ (바디 / 의상, Material Editor 내보내기)" })
+            {
+                if (d.ShowDialog(this) != DialogResult.OK) return;
+                ObjFile obj;
+                try { Cursor = Cursors.WaitCursor; obj = ObjFile.Load(d.FileName); }
+                catch (Exception ex) { MessageBox.Show(this, "OBJ를 읽을 수 없습니다.\n" + ex.Message); return; }
+                finally { Cursor = Cursors.Default; }
+                string[] groups; string axis;
+                if (!MeshOptionsDialog.Ask(this, obj, d.FileName == bodyPath ? meshGroups : null, meshAxis, out groups, out axis)) return;
+                meshObj = obj; meshGroups = groups; meshAxis = axis; bodyPath = d.FileName;
+                if (BuildMesh()) { SaveSettings(); if (view != ViewKind.UV) RefreshView(true); }
+            }
         }
-        bool LoadBody(string path)
+        /// <summary>현재 문서 크기로 메쉬(텍셀 지도) 만들기</summary>
+        bool BuildMesh()
         {
+            if (meshObj == null || doc == null) return false;
             try
             {
                 Cursor = Cursors.WaitCursor;
-                body = new BodyMesh(path, doc != null ? doc.W : DocW); bodyPath = path; viewBuf.Clear();
-                stInfo.Text = string.Format("바디: {0} (면 {1:N0})", Path.GetFileName(path), body.FaceCount);
+                mesh = new MeshModel(meshObj, meshGroups, doc.W, doc.H, meshAxis); viewBuf.Clear();
+                if (canvas.Wire != null) canvas.Wire.Dispose();
+                canvas.Wire = mesh.RenderUVWire(Color.FromArgb(255, 20, 60, 140));
+                stInfo.Text = string.Format("메쉬: {0} (면 {1:N0}, 텍셀 {2:N0}, {3}×{4}) — UV 와이어도 이 메쉬로 표시", Path.GetFileName(meshObj.Path), mesh.FaceCount, mesh.ValidTexels, doc.W, doc.H);
+                canvas.Invalidate();
                 return true;
             }
-            catch (Exception ex) { MessageBox.Show(this, "바디 OBJ를 읽을 수 없습니다.\n" + ex.Message); body = null; return false; }
+            catch (Exception ex) { MessageBox.Show(this, "메쉬를 만들 수 없습니다.\n" + ex.Message); mesh = null; return false; }
             finally { Cursor = Cursors.Default; }
         }
         bool EnsureBody()
         {
-            if (body != null && doc != null && body.N == doc.W) return true;
-            if (!string.IsNullOrEmpty(bodyPath) && File.Exists(bodyPath) && LoadBody(bodyPath)) return true;
-            PickBody(); return body != null;
+            if (mesh != null && doc != null && mesh.TW == doc.W && mesh.TH == doc.H) return true;
+            if (meshObj == null && !string.IsNullOrEmpty(bodyPath) && File.Exists(bodyPath))
+            {
+                try { Cursor = Cursors.WaitCursor; meshObj = ObjFile.Load(bodyPath); }
+                catch { meshObj = null; }
+                finally { Cursor = Cursors.Default; }
+                if (meshObj != null && meshGroups != null && !meshGroups.All(g => meshObj.Groups.ContainsKey(g))) meshGroups = null;
+            }
+            if (meshObj != null && BuildMesh()) return true;
+            PickBody(); return mesh != null;
         }
         void SetView(ViewKind v)
         {
@@ -356,23 +398,24 @@ namespace KKSkinTool
             if (v != ViewKind.UV && !EnsureBody()) { SyncViewCombo(); return; }
             view = v; SyncViewCombo();
             RefreshView(true);
-            stInfo.Text = v == ViewKind.UV ? "UV 보기" : "3D 보기: 이 화면에 놓은 파트는 확정할 때 몸에 투영되어 UV로 구워집니다";
+            stInfo.Text = v == ViewKind.UV ? "UV 보기" : "3D 보기: 이 화면에 놓은 파트는 확정할 때 메쉬에 투영되어 UV로 구워집니다";
         }
         void SyncViewCombo() { syncing = true; cmbView.SelectedIndex = (int)view; syncing = false; }
         /// <summary>3D 보기 이미지 갱신 (결과가 바뀔 때마다)</summary>
         void RefreshView(bool fit = false)
         {
             var old = canvas.ViewImage;
-            if (view == ViewKind.UV || body == null) canvas.ViewImage = null;
+            if (view == ViewKind.UV || mesh == null) canvas.ViewImage = null;
             else
             {
                 Cursor = Cursors.WaitCursor;
                 float[][] b;
                 if (!viewBuf.TryGetValue(view, out b))
                 {
-                    float[] z, uv, sh; body.RenderBuffers(view, out z, out uv, out sh); viewBuf[view] = b = new[] { z, uv, sh };
+                    viewBuf.Clear();                                                  // 4096에서도 메모리 부담 없게 현재 보기만 보관
+                    float[] z, uv, sh; mesh.RenderBuffers(view, out z, out uv, out sh); viewBuf[view] = b = new[] { z, uv, sh };
                 }
-                canvas.ViewImage = body.RenderView(view, doc.Result, b[0], b[1], b[2]);
+                canvas.ViewImage = mesh.RenderView(view, doc.Result, b[0], b[1], b[2]);
                 Cursor = Cursors.Default;
             }
             if (old != null && old != canvas.ViewImage) old.Dispose();
@@ -395,7 +438,7 @@ namespace KKSkinTool
                     g.DrawImage(p.Source, new Rectangle(0, 0, p.W, p.H), 0, 0, p.W, p.H, GraphicsUnit.Pixel, ia);
                 }
                 var rendered = Pixels.Read(tmp);
-                doc.ApplyPixels(px => body.Bake(view, rendered, p.S.Blend, px, b[0]));
+                doc.ApplyPixels(px => mesh.Bake(view, rendered, p.S.Blend, px, b[0]));
             }
         }
 
@@ -452,7 +495,7 @@ namespace KKSkinTool
         }
 
         // ------------------------------------------------------------ 영역 선택 → 떠 있는 선택(이동·크기·회전 후 확정/취소)
-        void ToggleSelect(CanvasView.SelectTool t) { SetSelectTool(canvas.Select == t ? CanvasView.SelectTool.None : t); }
+        void ToggleSelect(CanvasView.SelectTool t) { SetSelectTool(canvas.SelTool == t ? CanvasView.SelectTool.None : t); }
         void SetSelectTool(CanvasView.SelectTool t)
         {
             if (t != CanvasView.SelectTool.None)
@@ -461,7 +504,7 @@ namespace KKSkinTool
                 if (canvas.Part != null && canvas.Part.IsFloat) { stInfo.Text = "먼저 지금 선택 영역을 확정(Enter)하거나 취소(Esc)하세요"; t = CanvasView.SelectTool.None; }
                 else if (canvas.Part == null && view != ViewKind.UV) { stInfo.Text = "결과 이미지 선택은 UV 보기(F2)에서 합니다"; t = CanvasView.SelectTool.None; }
             }
-            canvas.Select = t; btnSelRect.Checked = t == CanvasView.SelectTool.Rect; btnSelLasso.Checked = t == CanvasView.SelectTool.Lasso;
+            canvas.SelTool = t; btnSelRect.Checked = t == CanvasView.SelectTool.Rect; btnSelLasso.Checked = t == CanvasView.SelectTool.Lasso;
             if (t != CanvasView.SelectTool.None)
                 stInfo.Text = canvas.Part != null ? "파트에서 변형할 부분을 드래그로 선택하세요" : "결과 이미지에서 변형할 영역을 드래그로 선택하세요";
         }
@@ -524,7 +567,7 @@ namespace KKSkinTool
         // ------------------------------------------------------------ 일괄 조합
         void OpenBatch()
         {
-            using (var f = new BatchCombineForm(batchTop, batchBottom, batchOut, DocW, DocH))
+            using (var f = new BatchCombineForm(batchTop, batchBottom, batchOut, doc != null ? doc.W : DocW, doc != null ? doc.H : DocH))
             {
                 f.Icon = Icon;
                 f.ShowDialog(this);
@@ -686,7 +729,7 @@ namespace KKSkinTool
                     if (Liquifying) { EndLiquify(true); return true; }
                     if (canvas.Part != null) { CommitPart(); return true; } break;
                 case Keys.Escape:
-                    if (canvas.Select != CanvasView.SelectTool.None) { SetSelectTool(CanvasView.SelectTool.None); return true; }
+                    if (canvas.SelTool != CanvasView.SelectTool.None) { SetSelectTool(CanvasView.SelectTool.None); return true; }
                     if (Liquifying) { EndLiquify(false); return true; }
                     if (canvas.Part != null) { CancelPart(); return true; } break;
                 case Keys.L: if (canvasFocus) { ToggleLiquify(); return true; } break;

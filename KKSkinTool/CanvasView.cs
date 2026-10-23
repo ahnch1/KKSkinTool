@@ -28,7 +28,7 @@ namespace KKSkinTool
 
         // ---------------- 영역 선택
         public enum SelectTool { None, Rect, Lasso }
-        public SelectTool Select = SelectTool.None;
+        public SelectTool SelTool = SelectTool.None;
         readonly System.Collections.Generic.List<PointF> selPts = new System.Collections.Generic.List<PointF>();
         bool selecting;
 
@@ -169,7 +169,7 @@ namespace KKSkinTool
             {
                 liquifyDown = true; Liquify.BeginStroke(Liquify.MapIn(downDoc)); holdTimer.Start(); Invalidate(); return;
             }
-            if (e.Button == MouseButtons.Left && Select != SelectTool.None)
+            if (e.Button == MouseButtons.Left && SelTool != SelectTool.None)
             {
                 selecting = true; selPts.Clear(); selPts.Add(downDoc); Invalidate(); return;
             }
@@ -201,7 +201,7 @@ namespace KKSkinTool
             }
             if (selecting)
             {
-                if (Select == SelectTool.Rect)
+                if (SelTool == SelectTool.Rect)
                 {
                     float x0 = Math.Min(downDoc.X, d.X), x1 = Math.Max(downDoc.X, d.X), y0 = Math.Min(downDoc.Y, d.Y), y1 = Math.Max(downDoc.Y, d.Y);
                     selPts.Clear(); selPts.AddRange(new[] { new PointF(x0, y0), new PointF(x1, y0), new PointF(x1, y1), new PointF(x0, y1) });
@@ -232,7 +232,7 @@ namespace KKSkinTool
                         Part.S.Rotation = r; Changed(); return;
                     }
             }
-            if (Select != SelectTool.None) { Cursor = Cursors.Cross; return; }
+            if (SelTool != SelectTool.None) { Cursor = Cursors.Cross; return; }
             if (Part != null && !SpaceDown)
             {
                 var h = HitTest(e.Location);

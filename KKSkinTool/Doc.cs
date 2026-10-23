@@ -31,6 +31,7 @@ namespace KKSkinTool
             using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read)) src = new Bitmap(fs);
             using (src)
             {
+                if (w <= 0 || h <= 0) { w = src.Width; h = src.Height; }          // 0이면 이미지 원래 크기
                 var d = new Doc(w, h, Pixels.HasTransparency(src));
                 using (var g = Graphics.FromImage(d.Result))
                 {
