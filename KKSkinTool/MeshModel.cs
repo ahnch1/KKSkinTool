@@ -300,6 +300,70 @@ namespace KKSkinTool
             return bmp;
         }
 
+        // ------------------------------------------------------------ 뷰 이미지 내보내기 / 불러오기 (외부 툴에서 칠하기)
+        /// <summary>편집용 뷰: 텍스처 색 그대로(음영 없음), 메쉬 밖은 투명</summary>
+        public Bitmap RenderAlbedo(Bitmap texture, float[] zbuf, float[] uvbuf)
+        {
+            var tex = Pixels.Read(texture); int tw = texture.Width, th = texture.Height;
+            var o = new byte[TW * TH * 4];
+            Parallel.For(0, TH, y =>
+            {
+                for (int x = 0; x < TW; x++)
+                {
+                    int i = y * TW + x, oi = i * 4;
+                    if (float.IsNegativeInfinity(zbuf[i])) continue;
+                    float u = uvbuf[i * 2] / TW, w = uvbuf[i * 2 + 1] / TH; u -= (float)Math.Floor(u); w -= (float)Math.Floor(w);
+                    int ti = (Math.Min(th - 1, (int)(w * th)) * tw + Math.Min(tw - 1, (int)(u * tw))) * 4;
+                    o[oi] = tex[ti]; o[oi + 1] = tex[ti + 1]; o[oi + 2] = tex[ti + 2];
+                    o[oi + 3] = Math.Max((byte)1, tex[ti + 3]);           // 메쉬 위는 완전 투명이 되지 않게 (밖과 구분)
+                }
+            });
+            var bmp = new Bitmap(TW, TH, PixelFormat.Format32bppArgb); Pixels.Write(bmp, o); return bmp;
+        }
+
+        /// <summary>
+        /// 여러 뷰에서 칠한 이미지를 한 번에 굽기 (kk_projbake 방식).
+        /// 텍셀마다 보이는 뷰들 중 "원본과 달라진 픽셀"에서만 색을 받아 법선 가중 평균. 어느 뷰에서도 안 바뀐 텍셀은 그대로.
+        /// views: (보기, 편집 이미지 BGRA, 변경 여부(픽셀별)). 반환: 바뀐 텍셀 수
+        /// </summary>
+        public int BakeViews(IList<Tuple<ViewKind, byte[], bool[]>> views, byte[] result, float power = 8f)
+        {
+            int n = texIdx.Length; var acc = new float[n * 4]; var wsum = new float[n];
+            float span = 1f / ViewScale();
+            foreach (var v in views)
+            {
+                float[] z, uv, sh; RenderBuffers(v.Item1, out z, out uv, out sh); uv = null; sh = null;
+                float vx, vy, vz; ViewDir(v.Item1, out vx, out vy, out vz);
+                var edit = v.Item2; var changed = v.Item3;
+                Parallel.For(0, n, k =>
+                {
+                    float sx, sy, d; ViewProject(v.Item1, texPos[k * 3], texPos[k * 3 + 1], texPos[k * 3 + 2], out sx, out sy, out d);
+                    int ix = (int)sx, iy = (int)sy; if (ix < 0 || iy < 0 || ix >= TW || iy >= TH) return;
+                    int pi = iy * TW + ix; if (!changed[pi]) return;
+                    float nx = texNrm[k * 3], ny = texNrm[k * 3 + 1], nz = texNrm[k * 3 + 2], nl = (float)Math.Sqrt(nx * nx + ny * ny + nz * nz) + 1e-9f;
+                    float ndv = (nx * vx + ny * vy + nz * vz) / nl; if (ndv < -0.05f) return;
+                    float dtol = span * Math.Min(2 + 1.5f / Math.Max(Math.Abs(ndv), 0.02f), 40);   // 스치는 각도일수록 깊이 허용치를 크게
+                    if (d < z[pi] - dtol) return;
+                    float w = (float)Math.Pow(Math.Max(ndv, 0), power) + 1e-4f;
+                    int ei = pi * 4;
+                    wsum[k] += w; for (int c = 0; c < 4; c++) acc[k * 4 + c] += w * edit[ei + c];   // k마다 한 스레드 → 경쟁 없음
+                });
+            }
+            int N = TW * TH; var touched = new bool[N]; int cnt = 0;
+            for (int k = 0; k < n; k++)
+            {
+                if (wsum[k] <= 1e-6f) continue;
+                int oi = texIdx[k] * 4; for (int c = 0; c < 4; c++) result[oi + c] = (byte)Math.Min(255, acc[k * 4 + c] / wsum[k] + 0.5f);
+                touched[texIdx[k]] = true; cnt++;
+            }
+            for (int i = 0; i < N; i++)
+            {
+                int s0 = padSrc[i]; if (s0 < 0 || s0 == i || !touched[s0]) continue;
+                for (int c = 0; c < 4; c++) result[i * 4 + c] = result[s0 * 4 + c];
+            }
+            return cnt;
+        }
+
         // ------------------------------------------------------------ 투영 굽기
         public void Bake(ViewKind v, byte[] rendered, BlendKind blend, byte[] result, float[] zbuf)
         {

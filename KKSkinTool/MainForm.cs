@@ -32,6 +32,7 @@ namespace KKSkinTool
         MeshModel mesh; ObjFile meshObj; string bodyPath = "", meshAxis = "+z"; string[] meshGroups;
         ComboBox cmbSize;
         static readonly int[] Sizes = { 512, 1024, 2048, 4096 };
+        string lastViewDir = "";
         ViewKind view = ViewKind.UV;
         ComboBox cmbView;
         readonly System.Collections.Generic.Dictionary<ViewKind, float[][]> viewBuf = new System.Collections.Generic.Dictionary<ViewKind, float[][]>();
@@ -69,6 +70,8 @@ namespace KKSkinTool
             cmbView.Items.AddRange(new object[] { "UV (F2)", "정면 (F3)", "후면 (F4)", "왼쪽 (F5)", "오른쪽 (F6)" }); cmbView.SelectedIndex = 0;
             cmbView.SelectedIndexChanged += (s, e) => { if (!syncing) SetView((ViewKind)cmbView.SelectedIndex); };
             ts.Items.Add(new ToolStripControlHost(cmbView));
+            ts.Items.Add(Btn("뷰 내보내기", "정면·후면·좌·우 뷰를 PNG로 내보내기 → 포토샵 등에서 칠하기", (s, e) => ExportViews()));
+            ts.Items.Add(Btn("뷰 불러오기", "칠한 뷰 PNG를 불러와 바뀐 부분만 메쉬에 투영해 굽기 (여러 뷰를 한 번에)", (s, e) => ImportViews()));
             ts.Items.Add(new ToolStripSeparator());
             ts.Items.Add(Btn("파트 불러오기", "Ctrl+O", (s, e) => LoadPart()));
             btnSelRect = Btn("사각 선택", "M: 결과(파트가 없을 때) 또는 배치 중인 파트의 일부를 사각형으로 선택해 이동·크기·회전", (s, e) => ToggleSelect(CanvasView.SelectTool.Rect));
@@ -225,11 +228,12 @@ namespace KKSkinTool
             if (l.Length > 6) bodyPath = l[6];
             if (l.Length > 7 && l[7].Length > 0) meshGroups = l[7].Split('\t');
             if (l.Length > 8 && l[8].Length > 0) meshAxis = l[8];
+            if (l.Length > 10) lastViewDir = l[10];
             int sz; if (l.Length > 9 && int.TryParse(l[9], out sz) && Array.IndexOf(Sizes, sz) >= 0) cmbSize.SelectedIndex = Array.IndexOf(Sizes, sz);
         }
         void SaveSettings()
         {
-            try { File.WriteAllLines(settingsPath, new[] { wirePath ?? "", lastPartDir ?? "", lastSaveDir ?? "", batchTop ?? "", batchBottom ?? "", batchOut ?? "", bodyPath ?? "", meshGroups != null ? string.Join("\t", meshGroups) : "", meshAxis ?? "+z", Sizes[Math.Max(0, cmbSize.SelectedIndex)].ToString() }); } catch { }
+            try { File.WriteAllLines(settingsPath, new[] { wirePath ?? "", lastPartDir ?? "", lastSaveDir ?? "", batchTop ?? "", batchBottom ?? "", batchOut ?? "", bodyPath ?? "", meshGroups != null ? string.Join("\t", meshGroups) : "", meshAxis ?? "+z", Sizes[Math.Max(0, cmbSize.SelectedIndex)].ToString(), lastViewDir ?? "" }); } catch { }
         }
 
         // ------------------------------------------------------------ 베이스 / 문서
@@ -439,6 +443,57 @@ namespace KKSkinTool
                 }
                 var rendered = Pixels.Read(tmp);
                 doc.ApplyPixels(px => mesh.Bake(view, rendered, p.S.Blend, px, b[0]));
+            }
+        }
+
+        // ------------------------------------------------------------ 뷰 이미지 내보내기 / 불러오기
+        void ExportViews()
+        {
+            if (doc == null) return;
+            if (Liquifying) EndLiquify(true);
+            if (!ResolveActive() || !EnsureBody()) return;
+            using (var d = new FolderBrowserDialog { Description = "뷰 이미지를 저장할 폴더 (front/back/left/right.png 등이 만들어짐)", SelectedPath = lastViewDir })
+            {
+                if (d.ShowDialog(this) != DialogResult.OK) return;
+                if (File.Exists(Path.Combine(d.SelectedPath, "front.png")) &&
+                    MessageBox.Show(this, "이 폴더에 이미 뷰 이미지가 있습니다. 덮어쓸까요?", "KKSkinTool", MessageBoxButtons.YesNo) != DialogResult.Yes) return;
+                Cursor = Cursors.WaitCursor;
+                try { ViewExchange.Export(mesh, doc.Result, d.SelectedPath, v => { stInfo.Text = "내보내는 중: " + v; Application.DoEvents(); }); }
+                catch (Exception ex) { MessageBox.Show(this, "내보내기 실패\n" + ex.Message); return; }
+                finally { Cursor = Cursors.Default; }
+                lastViewDir = d.SelectedPath; SaveSettings();
+                stInfo.Text = "뷰 내보내기 완료: " + d.SelectedPath + "  (front/back/left/right.png를 칠한 뒤 [뷰 불러오기])";
+                try { System.Diagnostics.Process.Start("explorer.exe", d.SelectedPath); } catch { }
+            }
+        }
+        void ImportViews()
+        {
+            if (doc == null) return;
+            if (Liquifying) EndLiquify(true);
+            if (!ResolveActive() || !EnsureBody()) return;
+            using (var d = new FolderBrowserDialog { Description = "칠한 뷰 이미지가 있는 폴더 (뷰 내보내기로 만든 폴더)", SelectedPath = lastViewDir })
+            {
+                if (d.ShowDialog(this) != DialogResult.OK) return;
+                var pj = ViewExchange.ReadProject(d.SelectedPath);
+                if (pj == null) { MessageBox.Show(this, "project.txt가 없습니다. [뷰 내보내기]로 만든 폴더를 고르세요."); return; }
+                string sz; pj.TryGetValue("size", out sz);
+                if (sz != doc.W + "x" + doc.H) { MessageBox.Show(this, string.Format("내보낼 때 크기({0})와 지금 문서 크기({1}×{2})가 다릅니다.", sz, doc.W, doc.H)); return; }
+                string mp; pj.TryGetValue("mesh", out mp); string ax; pj.TryGetValue("axis", out ax);
+                if ((mp != null && !string.Equals(Path.GetFullPath(mp), Path.GetFullPath(mesh.Path), StringComparison.OrdinalIgnoreCase)) || (ax != null && ax != mesh.FrontAxis))
+                    if (MessageBox.Show(this, "내보낼 때와 메쉬(또는 앞 방향)가 다릅니다. 그래도 진행할까요?", "KKSkinTool", MessageBoxButtons.YesNo) != DialogResult.Yes) return;
+                Cursor = Cursors.WaitCursor;
+                try
+                {
+                    var edits = ViewExchange.LoadEdits(d.SelectedPath, doc.W, doc.H, 6, m => { stInfo.Text = m; Application.DoEvents(); });
+                    if (edits.Count == 0) { stInfo.Text = "바뀐 픽셀이 없습니다 (원본과 같음)"; return; }
+                    int n = 0;
+                    doc.ApplyPixels(px => n = mesh.BakeViews(edits, px));
+                    lastViewDir = d.SelectedPath; SaveSettings();
+                    RefreshView();
+                    stInfo.Text = string.Format("뷰 불러오기: {0}개 뷰에서 텍셀 {1:N0}개 반영 (Ctrl+Z로 되돌리기)", edits.Count, n);
+                }
+                catch (Exception ex) { MessageBox.Show(this, "불러오기 실패\n" + ex.Message); }
+                finally { Cursor = Cursors.Default; }
             }
         }
 
