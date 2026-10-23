@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Windows.Forms;
@@ -9,6 +10,7 @@ namespace KKSkinTool
     public class CanvasView : Control
     {
         public Doc Doc;
+        public Bitmap ViewImage;      // 3D 보기(정면·후면·옆)일 때 표시할 렌더 이미지 (null이면 UV)
         public PartLayer Part;
         public Bitmap Wire;
         public bool ShowWire = true;
@@ -22,6 +24,13 @@ namespace KKSkinTool
         public event Action<PointF> MouseDoc; // 상태 표시줄 좌표
         public event Action ViewChanged;
         public event Action LiquifyStrokeEnd;
+        public event Action<PointF[]> SelectionMade;     // 문서 좌표 다각형
+
+        // ---------------- 영역 선택
+        public enum SelectTool { None, Rect, Lasso }
+        public SelectTool Select = SelectTool.None;
+        readonly System.Collections.Generic.List<PointF> selPts = new System.Collections.Generic.List<PointF>();
+        bool selecting;
 
         // ---------------- 유동화
         public LiquifySession Liquify;
@@ -30,7 +39,7 @@ namespace KKSkinTool
 
         enum Mode { None, Pan, Move, Scale, Rotate }
         Mode mode = Mode.None;
-        Point downScreen; PointF downDoc; PartState downState; PointF downPan;
+        Point downScreen; PointF downDoc, downLocal; PartState downState; PointF downPan;
         public bool SpaceDown;
         const int HandlePx = 7, RotHandlePx = 34;
         TextureBrush checker;
@@ -76,31 +85,46 @@ namespace KKSkinTool
             var g = e.Graphics; g.Clear(BackColor);
             if (Doc == null) return;
             var docRect = new RectangleF(pan.X, pan.Y, Doc.W * Zoom, Doc.H * Zoom);
-            if (Doc.TransparentBg) g.FillRectangle(checker, docRect);
+            if (Doc.TransparentBg && ViewImage == null) g.FillRectangle(checker, docRect);
             g.InterpolationMode = Zoom >= 1.5f ? InterpolationMode.NearestNeighbor : InterpolationMode.Bilinear;
             g.PixelOffsetMode = PixelOffsetMode.Half;
-            g.DrawImage(Doc.Result, docRect);
+            g.DrawImage(ViewImage ?? Doc.Result, docRect);
             if (Part != null)
             {
-                var st = g.Save();
-                g.TranslateTransform(pan.X, pan.Y); g.ScaleTransform(Zoom, Zoom);
-                using (var m = Part.GetMatrix()) g.MultiplyTransform(m);
-                using (var ia = PartLayer.OpacityAttr(Part.S.Opacity))
-                    g.DrawImage(Part.Display, new Rectangle(0, 0, Part.W, Part.H), 0, 0, Part.W, Part.H, GraphicsUnit.Pixel, ia);
-                g.Restore(st);
+                if (Part.Parent != null) DrawLayer(g, Part.Parent);       // 파트 안 선택 영역: 부모 파트(구멍 난 상태) 먼저
+                DrawLayer(g, Part);
             }
-            if (ShowWire && Wire != null)
+            if (ShowWire && Wire != null && ViewImage == null)
                 using (var ia = PartLayer.OpacityAttr(WireOpacity)) g.DrawImage(Wire, Rectangle.Round(docRect), 0, 0, Wire.Width, Wire.Height, GraphicsUnit.Pixel, ia);
             using (var pen = new Pen(Color.FromArgb(120, 0, 0, 0))) g.DrawRectangle(pen, docRect.X, docRect.Y, docRect.Width, docRect.Height);
             if (Part != null) DrawHandles(g);
+            if (selecting && selPts.Count > 1)
+            {
+                var sp = selPts.Select(ToScreen).ToArray();
+                using (var pen = new Pen(Color.White, 1.5f)) g.DrawPolygon(pen, sp);
+                using (var pen = new Pen(Color.Black, 1.5f) { DashStyle = DashStyle.Dash }) g.DrawPolygon(pen, sp);
+            }
+            if (Part != null && Part.Parent != null)
+                using (var pen = new Pen(Color.FromArgb(120, 255, 140, 0), 1f) { DashStyle = DashStyle.Dot })
+                    g.DrawPolygon(pen, Part.Parent.Corners().Select(ToScreen).ToArray());
             if (Liquify != null && brushVisible)
             {
                 g.SmoothingMode = SmoothingMode.AntiAlias;
-                var c = ToScreen(brushDoc); float r = Liquify.Radius * Zoom;
+                var c = ToScreen(brushDoc); float r = Liquify.Radius * Liquify.ViewScale * Zoom;
                 using (var pen = new Pen(Color.FromArgb(200, 255, 255, 255), 2.5f)) g.DrawEllipse(pen, c.X - r, c.Y - r, 2 * r, 2 * r);
                 using (var pen = new Pen(Color.FromArgb(220, 0, 120, 255), 1.2f)) g.DrawEllipse(pen, c.X - r, c.Y - r, 2 * r, 2 * r);
                 g.DrawLine(Pens.DodgerBlue, c.X - 4, c.Y, c.X + 4, c.Y); g.DrawLine(Pens.DodgerBlue, c.X, c.Y - 4, c.X, c.Y + 4);
             }
+        }
+
+        void DrawLayer(Graphics g, PartLayer p)
+        {
+            var st = g.Save();
+            g.TranslateTransform(pan.X, pan.Y); g.ScaleTransform(Zoom, Zoom);
+            using (var m = p.GetMatrix()) g.MultiplyTransform(m);
+            using (var ia = p.Attr(true))
+                g.DrawImage(p.Display, new Rectangle(0, 0, p.W, p.H), 0, 0, p.W, p.H, GraphicsUnit.Pixel, ia);
+            g.Restore(st);
         }
 
         void DrawHandles(Graphics g)
@@ -143,11 +167,15 @@ namespace KKSkinTool
             { mode = Mode.Pan; Cursor = Cursors.SizeAll; return; }
             if (e.Button == MouseButtons.Left && Liquify != null)
             {
-                liquifyDown = true; Liquify.BeginStroke(downDoc); holdTimer.Start(); Invalidate(); return;
+                liquifyDown = true; Liquify.BeginStroke(Liquify.MapIn(downDoc)); holdTimer.Start(); Invalidate(); return;
+            }
+            if (e.Button == MouseButtons.Left && Select != SelectTool.None)
+            {
+                selecting = true; selPts.Clear(); selPts.Add(downDoc); Invalidate(); return;
             }
             if (e.Button != MouseButtons.Left || Part == null) return;
             mode = HitTest(e.Location);
-            if (mode != Mode.None) { if (BeginEdit != null) BeginEdit(); downState = Part.S.Clone(); }
+            if (mode != Mode.None) { if (BeginEdit != null) BeginEdit(); downState = Part.S.Clone(); downLocal = Part.ToParentSpace(downDoc); }
         }
 
         Mode HitTest(Point p)
@@ -167,32 +195,44 @@ namespace KKSkinTool
             if (Liquify != null && mode != Mode.Pan)
             {
                 brushDoc = d; brushVisible = true;
-                if (liquifyDown) Liquify.MoveTo(d);
+                if (liquifyDown) Liquify.MoveTo(Liquify.MapIn(d));
                 Cursor = SpaceDown ? Cursors.SizeAll : Cursors.Cross;
                 Invalidate(); return;
             }
+            if (selecting)
+            {
+                if (Select == SelectTool.Rect)
+                {
+                    float x0 = Math.Min(downDoc.X, d.X), x1 = Math.Max(downDoc.X, d.X), y0 = Math.Min(downDoc.Y, d.Y), y1 = Math.Max(downDoc.Y, d.Y);
+                    selPts.Clear(); selPts.AddRange(new[] { new PointF(x0, y0), new PointF(x1, y0), new PointF(x1, y1), new PointF(x0, y1) });
+                }
+                else if (Dist(ToScreen(selPts[selPts.Count - 1]), e.Location) > 3) selPts.Add(d);
+                Invalidate(); return;
+            }
+            var dl = Part != null ? Part.ToParentSpace(d) : d;       // 파트 S 값이 쓰는 좌표계 (선택 영역이면 부모 파트 로컬)
             switch (mode)
             {
                 case Mode.Pan:
                     pan = new PointF(downPan.X + e.X - downScreen.X, downPan.Y + e.Y - downScreen.Y); Invalidate(); return;
                 case Mode.Move:
-                    Part.S.Cx = downState.Cx + d.X - downDoc.X; Part.S.Cy = downState.Cy + d.Y - downDoc.Y; Changed(); return;
+                    Part.S.Cx = downState.Cx + dl.X - downLocal.X; Part.S.Cy = downState.Cy + dl.Y - downLocal.Y; Changed(); return;
                 case Mode.Scale:
                     {
-                        float d0 = Dist(downDoc, new PointF(downState.Cx, downState.Cy)), d1 = Dist(d, new PointF(downState.Cx, downState.Cy));
+                        float d0 = Dist(downLocal, new PointF(downState.Cx, downState.Cy)), d1 = Dist(dl, new PointF(downState.Cx, downState.Cy));
                         if (d0 < 1) return;
                         float k = d1 / d0;
                         Part.S.ScaleX = Math.Max(0.01f, downState.ScaleX * k); Part.S.ScaleY = Math.Max(0.01f, downState.ScaleY * k); Changed(); return;
                     }
                 case Mode.Rotate:
                     {
-                        double a0 = Math.Atan2(downDoc.Y - downState.Cy, downDoc.X - downState.Cx), a1 = Math.Atan2(d.Y - downState.Cy, d.X - downState.Cx);
+                        double a0 = Math.Atan2(downLocal.Y - downState.Cy, downLocal.X - downState.Cx), a1 = Math.Atan2(dl.Y - downState.Cy, dl.X - downState.Cx);
                         float r = downState.Rotation + (float)((a1 - a0) * 180 / Math.PI);
                         if ((ModifierKeys & Keys.Shift) != 0) r = (float)Math.Round(r / 15) * 15;      // Shift: 15° 단위
                         r = ((r % 360) + 540) % 360 - 180;
                         Part.S.Rotation = r; Changed(); return;
                     }
             }
+            if (Select != SelectTool.None) { Cursor = Cursors.Cross; return; }
             if (Part != null && !SpaceDown)
             {
                 var h = HitTest(e.Location);
@@ -207,6 +247,12 @@ namespace KKSkinTool
             {
                 liquifyDown = false; holdTimer.Stop();
                 if (Liquify != null) { Liquify.EndStroke(); if (LiquifyStrokeEnd != null) LiquifyStrokeEnd(); }
+            }
+            if (selecting)
+            {
+                selecting = false; var poly = selPts.ToArray(); selPts.Clear(); Invalidate();
+                if (poly.Length >= 3 && SelectionMade != null) SelectionMade(poly);
+                return;
             }
             if (mode == Mode.Pan && ViewChanged != null) ViewChanged();
             mode = Mode.None; Cursor = Cursors.Default;

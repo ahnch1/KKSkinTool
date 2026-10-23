@@ -46,6 +46,86 @@ namespace KKSkinTool
             var b = new Bitmap(src.Width, src.Height, PixelFormat.Format32bppArgb); Write(b, o); return b;
         }
 
+        /// <summary>
+        /// 탠라인(흰 바탕 + 어두운 영역) → 타투 오버레이용 (투명 바탕 + 흰색).
+        /// 알파 = 진하기(255 - 밝기). normalize면 가장 진한 곳을 알파 255로 늘림 (경계의 부드러움은 유지)
+        /// </summary>
+        public static int TanToWhiteAlpha(byte[] px, bool normalize)
+        {
+            int n = px.Length / 4, max = 0;
+            var d = new int[n];
+            for (int k = 0; k < n; k++)
+            {
+                int i = k * 4;
+                int dk = (255 - Lum(px, i)) * px[i + 3] / 255;           // 이미 투명한 곳은 진하기 0
+                d[k] = dk; if (dk > max) max = dk;
+            }
+            if (max == 0) return 0;
+            Parallel.For(0, n, k =>
+            {
+                int i = k * 4, a = normalize ? Math.Min(255, d[k] * 255 / max) : d[k];
+                if (a < 2) a = 0;                                          // 미세한 잡티 제거
+                px[i] = px[i + 1] = px[i + 2] = 255; px[i + 3] = (byte)a;
+            });
+            return max;
+        }
+
+        /// <summary>DarknessToAlpha를 rect 영역만 다시 계산 (dst는 src와 같은 크기)</summary>
+        public static void DarknessToAlphaRegion(Bitmap src, Bitmap dst, Rectangle r)
+        {
+            r = Rectangle.Intersect(r, new Rectangle(0, 0, src.Width, src.Height)); if (r.Width <= 0 || r.Height <= 0) return;
+            var full = new Rectangle(0, 0, src.Width, src.Height);
+            var ds = src.LockBits(full, ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+            var dd = dst.LockBits(full, ImageLockMode.ReadWrite, PixelFormat.Format32bppArgb);
+            var row = new byte[r.Width * 4]; var o = new byte[r.Width * 4];
+            for (int y = r.Top; y < r.Bottom; y++)
+            {
+                Marshal.Copy(ds.Scan0 + y * ds.Stride + r.X * 4, row, 0, row.Length);
+                for (int k = 0; k < r.Width; k++)
+                {
+                    int i = k * 4; int a = (255 - Lum(row, i)) * row[i + 3] / 255;
+                    o[i] = o[i + 1] = o[i + 2] = 0; o[i + 3] = (byte)a;
+                }
+                Marshal.Copy(o, 0, dd.Scan0 + y * dd.Stride + r.X * 4, o.Length);
+            }
+            src.UnlockBits(ds); dst.UnlockBits(dd);
+        }
+
+        /// <summary>
+        /// 선택 영역 잘라내기: poly(대상 픽셀 좌표) 안의 픽셀을 새 비트맵으로 복사하고 원본 자리는 fill로 채움.
+        /// 반환 비트맵은 다각형 경계 상자 크기, 다각형 밖은 투명. origin = 경계 상자 왼쪽 위
+        /// </summary>
+        public static Bitmap Lift(Bitmap target, PointF[] poly, Color fill, out Point origin)
+        {
+            float x0 = float.MaxValue, y0 = float.MaxValue, x1 = float.MinValue, y1 = float.MinValue;
+            foreach (var p in poly) { x0 = Math.Min(x0, p.X); y0 = Math.Min(y0, p.Y); x1 = Math.Max(x1, p.X); y1 = Math.Max(y1, p.Y); }
+            var box = Rectangle.Intersect(Rectangle.FromLTRB((int)Math.Floor(x0), (int)Math.Floor(y0), (int)Math.Ceiling(x1), (int)Math.Ceiling(y1)), new Rectangle(0, 0, target.Width, target.Height));
+            origin = box.Location;
+            if (box.Width < 2 || box.Height < 2) return null;
+            var mask = new byte[box.Width * box.Height];
+            using (var mb = new Bitmap(box.Width, box.Height, PixelFormat.Format32bppArgb))
+            {
+                using (var g = Graphics.FromImage(mb))
+                {
+                    g.Clear(Color.Black); g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.None;
+                    var pp = Array.ConvertAll(poly, p => new PointF(p.X - box.X, p.Y - box.Y));
+                    g.FillPolygon(Brushes.White, pp);
+                }
+                var mp = Read(mb); for (int i = 0; i < mask.Length; i++) mask[i] = mp[i * 4 + 2];
+            }
+            var all = Read(target); var cut = new byte[box.Width * box.Height * 4];
+            for (int y = 0; y < box.Height; y++)
+                for (int x = 0; x < box.Width; x++)
+                {
+                    int m = y * box.Width + x; if (mask[m] < 128) continue;
+                    int si = ((box.Y + y) * target.Width + box.X + x) * 4, di = m * 4;
+                    for (int c = 0; c < 4; c++) cut[di + c] = all[si + c];
+                    all[si] = fill.B; all[si + 1] = fill.G; all[si + 2] = fill.R; all[si + 3] = fill.A;
+                }
+            Write(target, all);
+            var res = new Bitmap(box.Width, box.Height, PixelFormat.Format32bppArgb); Write(res, cut); return res;
+        }
+
         /// <summary>와이어프레임을 반투명 선 레이어로 변환 (어두운 선만 남김)</summary>
         public static Bitmap WireOverlay(Bitmap src, Color col, int alpha)
         {

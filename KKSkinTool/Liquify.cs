@@ -23,6 +23,11 @@ namespace KKSkinTool
         public LiquifyTool Tool = LiquifyTool.Push;
         public float Radius = 80f;        // 문서 픽셀
         public float Strength = 0.5f;     // 0..1
+        // 파트 유동화용: 문서 좌표 → 대상 이미지 좌표 변환, 대상 1px이 문서 몇 px인지, 그린 뒤 알림
+        public Func<PointF, PointF> MapIn = p => p;
+        public float ViewScale = 1f;
+        public Action<Rectangle> Rendered;
+        public Bitmap Target { get { return target; } }
 
         // 실행 취소: 획마다 처음 건드린 타일의 변위값을 저장
         const int Tile = 64;
@@ -115,7 +120,7 @@ namespace KKSkinTool
         }
 
         /// <summary>취소: 결과를 시작 시점 그대로 되돌림</summary>
-        public void Cancel() { Pixels.Write(target, basePix); }
+        public void Cancel() { Pixels.Write(target, basePix); if (Rendered != null) Rendered(new Rectangle(0, 0, W, H)); }
 
         // ------------------------------------------------------------ 브러시 한 번
         Rectangle Dab(PointF c, PointF prev)
@@ -228,6 +233,7 @@ namespace KKSkinTool
             for (int y = 0; y < rect.Height; y++)
                 Marshal.Copy(buf, y * rect.Width * 4, data.Scan0 + (rect.Y + y) * data.Stride + rect.X * 4, rect.Width * 4);
             target.UnlockBits(data);
+            if (Rendered != null) Rendered(rect);
         }
 
         // ------------------------------------------------------------ 타일 저장/복원

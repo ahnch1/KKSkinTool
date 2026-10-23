@@ -10,6 +10,11 @@
     <AssemblyName>KKSkinTool</AssemblyName>
     <RootNamespace>KKSkinTool</RootNamespace>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <ApplicationIcon>kk_tools.ico</ApplicationIcon>
   </PropertyGroup>
+
+  <ItemGroup>
+    <Content Include="kk_tools.ico" />
+  </ItemGroup>
 
 </Project>

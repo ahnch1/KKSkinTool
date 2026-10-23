@@ -11,7 +11,7 @@ namespace KKSkinTool
     public class Doc : IDisposable
     {
         public Bitmap Result { get; private set; }
-        public bool TransparentBg { get; private set; }
+        public bool TransparentBg { get; set; }
         public int W { get { return Result.Width; } }
         public int H { get { return Result.Height; } }
         public bool Dirty;
@@ -70,18 +70,25 @@ namespace KKSkinTool
             Result.Dispose(); Result = b; Dirty = true;
         }
 
-        /// <summary>파트를 현재 변환 그대로 결과에 확정</summary>
+        /// <summary>파트를 현재 변환 그대로 결과에 확정. 결과에서 잘라낸 선택 영역이면 잘라내기 전 상태를 실행 취소 지점으로 씀</summary>
         public void Commit(PartLayer p)
         {
-            Push(undo);
+            if (p.IsFloat && p.Parent == null) { undo.Add((Bitmap)p.Backup.Clone()); if (undo.Count > MaxUndo) { undo[0].Dispose(); undo.RemoveAt(0); } }
+            else Push(undo);
             foreach (var b in redo) b.Dispose(); redo.Clear();
-            using (var m = p.GetMatrix())
-            using (var ia = PartLayer.OpacityAttr(p.S.Opacity))
+            using (var m = p.GetMatrix()) DrawPart(Result, p, m, true);
+            Dirty = true;
+        }
+
+        /// <summary>파트를 target 위에 matrix로 그려 합성 (일반: 알파 합성 / 어둡게·곱하기: 흰 바탕에 그린 뒤 픽셀 합성)</summary>
+        public static void DrawPart(Bitmap target, PartLayer p, Matrix m, bool transparentAware)
+        {
+            using (var ia = p.Attr(false))
             {
                 var srcRect = new Rectangle(0, 0, p.W, p.H);
                 if (p.S.Blend == BlendKind.Normal)
                 {
-                    using (var g = Graphics.FromImage(Result))
+                    using (var g = Graphics.FromImage(target))
                     {
                         Quality(g); g.Transform = m;
                         g.DrawImage(p.Source, srcRect, 0, 0, p.W, p.H, GraphicsUnit.Pixel, ia);
@@ -89,17 +96,31 @@ namespace KKSkinTool
                 }
                 else
                 {
-                    using (var tmp = new Bitmap(W, H, PixelFormat.Format32bppArgb))
+                    using (var tmp = new Bitmap(target.Width, target.Height, PixelFormat.Format32bppArgb))
                     {
                         using (var g = Graphics.FromImage(tmp))
                         {
                             g.Clear(Color.White); Quality(g); g.Transform = m;
                             g.DrawImage(p.Source, srcRect, 0, 0, p.W, p.H, GraphicsUnit.Pixel, ia);
                         }
-                        Pixels.BlendInto(Result, tmp, p.S.Blend);
+                        Pixels.BlendInto(target, tmp, p.S.Blend);
                     }
                 }
             }
+        }
+
+        /// <summary>결과에서 잘라낸 선택 영역을 취소: 잘라내기 전으로 복원 (실행 취소 기록 없음)</summary>
+        public void RestoreFrom(Bitmap backup)
+        {
+            using (var g = Graphics.FromImage(Result)) { g.CompositingMode = CompositingMode.SourceCopy; g.DrawImageUnscaled(backup, 0, 0); }
+        }
+
+        /// <summary>결과 픽셀(BGRA)을 직접 편집 (실행 취소 지점 포함) — 3D 투영 굽기용</summary>
+        public void ApplyPixels(Action<byte[]> edit)
+        {
+            Push(undo);
+            foreach (var b in redo) b.Dispose(); redo.Clear();
+            var px = Pixels.Read(Result); edit(px); Pixels.Write(Result, px);
             Dirty = true;
         }
 
